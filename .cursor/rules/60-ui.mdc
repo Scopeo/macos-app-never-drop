@@ -1,0 +1,32 @@
+---
+description: UI rules — menu bar, permission panel, passive components
+globs: "**/UI/**/*.swift"
+alwaysApply: false
+---
+
+# UI Module
+
+## Principles
+
+- UI components are **passive**: they expose `on*` callbacks and are driven by the coordinator
+- **No business logic** in UI code — no call detection, no audio, no transcription logic
+- State changes come in via `updateState()` or similar methods, never computed internally
+
+## StatusBarController
+
+- `NSStatusItem` with custom template images from the asset catalog:
+  - `idle` / `error` → `MenuBarIcon` (template)
+  - `callDetected` / `recording` → `MenuBarIconActive` (non-template)
+- Dropdown `NSMenu` rebuilt on state change
+- Language submenu for transcription language selection (auto, en, fr, es, de, it, pt, ja, zh)
+
+## PermissionPanel
+
+- Floating `NSPanel` (non-activating, joins all spaces)
+- Wraps a SwiftUI `PermissionPanelView`
+- **15-second auto-dismiss countdown** — if the user doesn't respond, the panel dismisses and the call is ignored
+- Accept/Decline callbacks wired to coordinator
+
+## Future
+
+If more SwiftUI views are added, consider extracting a shared `ViewState` observable rather than adding more callbacks. But keep UI thin — the coordinator remains the source of truth.

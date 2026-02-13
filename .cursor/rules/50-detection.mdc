@@ -1,0 +1,36 @@
+---
+description: Call detection state machine and microphone monitoring rules
+globs: "**/Detection/**/*.swift"
+alwaysApply: false
+---
+
+# Detection Module
+
+## State Machine (`CallDetector`)
+
+```
+idle → callDetected → recording → stopping → idle
+```
+
+- `idle`: no call in progress
+- `callDetected`: mic activity detected, prompt shown to user
+- `recording`: user accepted, transcription active
+- `stopping`: teardown in progress
+- Transitions emit callbacks (`onCallDetected`, `onCallEnded`) — never mutate external state directly
+
+## Debounce Timers
+
+- **Activation delay:** 3 seconds — mic must stay active for 3s before triggering `onCallDetected`
+- **Deactivation delay:** 30 seconds — mic must be inactive for 30s before triggering `onCallEnded`
+- These values should be named constants, not magic numbers
+
+## MicrophoneMonitor
+
+- Tracks all input devices via `kAudioDevicePropertyDeviceIsRunningSomewhere`
+- Supports **hot-plug**: listens for device add/remove events
+- Exposes `AsyncStream<Bool>` for mic active/inactive state
+- Must not depend on any other module — pure CoreAudio listener
+
+## Independence
+
+This module must have **zero imports** from Audio/, Transcription/, or UI/. It only knows about mic activity, nothing about what happens next.

@@ -1,0 +1,55 @@
+---
+description: Swift naming, access control, logging, and concurrency conventions
+globs: "**/*.swift"
+alwaysApply: false
+---
+
+# Swift Conventions
+
+## Naming
+
+- **Types:** PascalCase — `AudioCaptureManager`, `CallState`
+- **Functions/properties:** camelCase — `startCapture()`, `isCapturing`
+- **Callbacks:** `on*` prefix — `onCallDetected`, `onAccept`
+- **Booleans:** `is*` / `has*` / `should*` — `isCapturing`, `isModelLoaded`
+- **Files:** match the primary type — `AudioCaptureManager.swift`
+- **Suffixes convey role:** `*Manager`, `*Monitor`, `*Engine`, `*Writer`, `*Controller`, `*View`, `*Panel`
+
+## Access Control
+
+- `private` by default for internal state
+- `private(set)` for externally readable but internally writable properties
+- `final class` on all classes (no subclassing)
+- Expose the **minimum** public surface — if it doesn't need to be public, it isn't
+
+## Concurrency
+
+- `@MainActor` on coordinator and UI classes
+- `@unchecked Sendable` with explicit locks (`NSLock` / `os_unfair_lock`) for classes shared across threads
+- All mutable state accessed from multiple threads **must** be protected — no unprotected `private(set) var`
+- Use Swift Structured Concurrency (`async/await`, `Task`, `AsyncStream`) over GCD
+
+## Logging
+
+Use `os.Logger` with subsystem `"com.draftnrun.NeverDrop"` and one category per module:
+
+```swift
+import os
+private let logger = Logger(subsystem: "com.draftnrun.NeverDrop", category: "Audio")
+logger.info("Capture started at \(sampleRate) Hz")
+logger.error("Failed to create process tap: \(error)")
+```
+
+- `.info` for lifecycle events (start/stop)
+- `.error` for failures
+- `.debug` for high-frequency diagnostics (disabled in release)
+- Never log sensitive audio data or transcript content
+
+## Section Headers
+
+Use `// MARK: - SectionName` for visual organization. Keep sections in this order:
+1. Properties
+2. Init / Lifecycle
+3. Public API
+4. Private helpers
+5. Errors (if any)

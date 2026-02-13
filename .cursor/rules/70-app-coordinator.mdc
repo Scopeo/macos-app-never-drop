@@ -1,0 +1,38 @@
+---
+description: AppDelegate coordinator wiring, lifecycle, and error surfacing
+globs: "**/App/**/*.swift"
+alwaysApply: false
+---
+
+# App Coordinator
+
+## Role
+
+`AppDelegate` is the **sole mediator** between all modules. Reading it top-to-bottom must tell the complete story:
+
+1. **Setup:** create components, wire callbacks
+2. **Lifecycle:** detect → prompt → capture → transcribe → stop
+3. **Teardown:** stop all components, clean up
+
+## Wiring Rules
+
+- Every component callback is set in a dedicated `setup*()` method
+- Callbacks use `[weak self]` to avoid retain cycles
+- No inline business logic in callbacks — delegate to named private methods
+
+## Error Surfacing
+
+Errors from any module **must reach the user**:
+- Audio capture failure → update status bar with error state + optional notification
+- Model load failure → show degraded state in status bar
+- Transcript write failure → log + notify
+
+Never silently swallow errors with just an `NSLog`.
+
+## Shared Constants
+
+App-wide constants (like the transcript directory path) live in a dedicated `Constants` enum or at the top of `AppDelegate`. They must be a **single source of truth** — never duplicate a path or config value.
+
+## Dependencies
+
+`AppDelegate` is the only file allowed to import and instantiate concrete module types. All other modules interact through protocols.

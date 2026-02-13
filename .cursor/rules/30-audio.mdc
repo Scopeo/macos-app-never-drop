@@ -1,0 +1,35 @@
+---
+description: Audio pipeline rules — CoreAudio, channel separation, resampling
+globs: "**/Audio/**/*.swift"
+alwaysApply: false
+---
+
+# Audio Module
+
+## Pipeline
+
+1. Create a **process tap** (`CATapDescription`) to capture all system audio
+2. Read default input (mic) and output device UIDs
+3. Create an **aggregate device** combining output + input + tap
+4. Install an IO proc on the aggregate device
+5. In the callback: keep mic and system buffers **separate**, resample each to 16 kHz Float32
+
+## Channel Separation (Critical)
+
+Mic and system audio **must not be mixed**. Each channel is resampled independently and exposed separately via the `AudioSource` protocol. This is required for future speaker diarization.
+
+## Performance
+
+- **Cache `AVAudioFormat` instances** — create them once in `startCapture()`, store as properties. Never allocate in the IO callback.
+- Keep the IO proc callback allocation-free: no Swift heap allocations, no `print`, no logging.
+- Use `NSLock` (not `os_unfair_lock`) to protect shared sample buffers — the lock is held very briefly.
+
+## Thread Safety
+
+- The IO proc runs on a real-time audio thread. All mutable state accessed from it must be lock-protected.
+- `isCapturing` must be protected by the same lock as the sample buffer, or made atomic.
+
+## Error Handling
+
+- `AudioCaptureError` enum for all failure modes (tap creation, aggregate device, IO proc)
+- Errors must propagate to the coordinator — never silently swallow a capture failure

@@ -1,0 +1,48 @@
+---
+description: Module structure, coordinator pattern, and protocol boundaries
+alwaysApply: true
+---
+
+# Architecture
+
+## Folder Structure
+
+```
+NeverDrop/
+  App/            — Entry point + coordinator (AppDelegate)
+  Audio/          — System audio + mic capture (CoreAudio)
+  Detection/      — Call detection state machine + mic monitoring
+  Transcription/  — WhisperKit inference + transcript file output
+  UI/             — Menu bar + permission panel (AppKit/SwiftUI)
+  Resources/      — Info.plist, entitlements
+```
+
+Each folder is a self-contained module. **Never import or depend on a sibling module directly** — all wiring goes through `AppDelegate`.
+
+## Coordinator Pattern
+
+`AppDelegate` is the **sole mediator**. It:
+- Owns all components
+- Wires them via closure callbacks (`on*` pattern)
+- Manages the call lifecycle: detect → prompt → capture → transcribe → stop
+
+No component should know about any other component. If module A needs data from module B, the coordinator passes it.
+
+## Protocol Boundaries
+
+Every module must expose a **protocol** at its public boundary:
+- `AudioSource` for audio capture (exposes `drainSamples`, `startCapture`, `stopCapture`)
+- `MicrophoneMonitoring` for mic activity detection
+- `TranscriptionWriting` for transcript output
+
+This enables testing modules in isolation without real hardware.
+
+## Audio Channel Separation
+
+Mic and system audio **MUST remain as separate channels** (not mixed). This is required for future speaker diarization. The `AudioSource` protocol must expose per-channel sample access.
+
+## Communication
+
+- **Downward:** coordinator calls methods on components
+- **Upward:** components emit events via `on*` closure callbacks
+- **No singletons, no global state, no NotificationCenter**

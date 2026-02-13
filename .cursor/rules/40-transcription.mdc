@@ -1,0 +1,34 @@
+---
+description: WhisperKit transcription engine and transcript output rules
+globs: "**/Transcription/**/*.swift"
+alwaysApply: false
+---
+
+# Transcription Module
+
+## WhisperKit
+
+- Model: `base` (loaded async at startup)
+- Input: 16 kHz Float32 mono audio
+- Polling loop: every 2 seconds, drain samples from `AudioSource`
+- Rolling buffer: capped at 30 seconds (`maxBufferSeconds`)
+- Word timestamps enabled, clip timestamps used to avoid re-processing confirmed segments
+
+## Confirmation Lag
+
+Segments are only committed (written to disk) when their `end` timestamp is **>4 seconds behind** the buffer head. Newer segments are treated as a live hypothesis — displayed but not persisted until confirmed.
+
+## Transcript Format
+
+- File: `~/Documents/NeverDrop/yyyy-MM-dd_HH-mm-ss.txt`
+- Line format: `[MM:SS] transcribed text`
+- The transcript directory path must come from a **single shared constant** (not duplicated)
+
+## Error Handling
+
+- Model load failure **must surface to the user** (status bar update or notification) — never silently leave `isModelLoaded = false`
+- If transcription fails mid-session, log the error and notify the coordinator
+
+## Future: Speaker Labels
+
+When diarization is available, the transcript format should extend to `[MM:SS] [Speaker] text`. Design the `TranscriptWriter` interface to accept an optional speaker label now.

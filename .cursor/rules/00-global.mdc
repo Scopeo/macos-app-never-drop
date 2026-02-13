@@ -1,0 +1,28 @@
+---
+description: NeverDrop project overview, coding standards, and living memory
+alwaysApply: true
+---
+
+# NeverDrop — Global Rules
+
+## Project
+
+macOS menu-bar app for visioconference and phone call transcription with speaker matching (diarization).
+- **Tech:** Swift 5, macOS 15+, SwiftUI + AppKit, CoreAudio (process taps), WhisperKit
+- **Build:** XcodeGen (`project.yml`) + SPM. The `.xcodeproj` is generated — edit `project.yml`, not the Xcode project directly.
+- **Bundle:** `com.draftnrun.NeverDrop`, agent app (no Dock icon)
+
+## Living Memory
+
+**You MUST update these rules whenever you learn new constraints from conversations.**
+If a discussion reveals a pattern, convention, or architectural decision, capture it in the appropriate rule file immediately.
+Rules live in `.cursor/rules/` — create or amend `.mdc` files as needed.
+
+## Coding Standards
+
+1. **Minimal comments** — well-named variables, functions, and files replace comments. Only comment non-obvious *why*, never *what*.
+2. **No code duplication** — extract shared logic into helpers, extensions, or protocols. If a constant appears in two places, make it a single source of truth.
+3. **Modularity** — each folder is an independent module. Modules communicate through protocols and callbacks, never by reaching into each other's internals.
+4. **Crystal-clear global logic** — reading `AppDelegate` should tell the full story of the app lifecycle without jumping into implementation details.
+5. **No dead code** — no commented-out blocks, no unused imports, no abandoned TODOs.
+6. **Smallest correct change** — prefer minimal diffs over rewrites.
