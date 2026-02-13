@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import os
 import ServiceManagement
@@ -25,6 +26,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupPermissionPanel()
 
         Task {
+            let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
+            guard micGranted else {
+                logger.warning("Microphone permission denied — cannot detect calls")
+                statusBar.updateState(.error("Microphone access required"))
+                return
+            }
+
+            callDetector.startMonitoring()
+
             do {
                 try await transcriptionEngine.loadModel()
             } catch {
@@ -32,8 +42,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 statusBar.updateState(.error("Transcription model failed to load"))
             }
         }
-
-        callDetector.startMonitoring()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

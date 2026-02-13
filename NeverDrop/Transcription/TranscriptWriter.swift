@@ -2,7 +2,10 @@ import Foundation
 
 final class TranscriptWriter: TranscriptionWriting {
 
-    static let transcriptsDirectoryPath = NSString(string: "~/Documents/NeverDrop").expandingTildeInPath
+    static let transcriptsDirectoryPath: String = {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return appSupport.appendingPathComponent("com.draftnrun.NeverDrop/Transcripts").path
+    }()
 
     private let directoryURL: URL
     private var fileHandle: FileHandle?

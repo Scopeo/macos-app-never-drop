@@ -304,6 +304,8 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
             pcmFormat: Self.targetFormat, frameCapacity: outputFrameCapacity
         ) else { return nil }
 
+        converter.reset()
+
         var consumed = false
         var conversionError: NSError?
         let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
