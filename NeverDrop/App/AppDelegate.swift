@@ -1,20 +1,26 @@
 import AppKit
 import AVFoundation
+import CoreAudio
 import Foundation
+import Observation
 import os
-import ServiceManagement
+import SwiftUI
 
 private let logger = Logger.app(category: "App")
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
+    let settings = AppSettings()
+
     private let statusBar = StatusBarController()
     private let callDetector = CallDetector()
-    private let transcriptionEngine = TranscriptionEngine()
     private let permissionPanel = PermissionPanel()
     private let transcriptWriter = TranscriptWriter()
     private var audioCapture: AudioCaptureManager?
+
+    private var transcriptionService: (any TranscriptionService)?
+    private var settingsWindow: NSWindow?
 
     // MARK: - NSApplicationDelegate
 
@@ -24,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusBar()
         setupCallDetector()
         setupPermissionPanel()
+        observeProviderChanges()
 
         Task {
             let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
@@ -33,14 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
+            probeScreenCapturePermission()
             callDetector.startMonitoring()
-
-            do {
-                try await transcriptionEngine.loadModel()
-            } catch {
-                logger.error("Model load failed: \(error)")
-                statusBar.updateState(.error("Transcription model failed to load"))
-            }
+            await prepareTranscriptionService()
         }
     }
 
@@ -53,7 +55,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupStatusBar() {
         statusBar.setup()
-        statusBar.isLaunchAtLoginEnabled = SMAppService.mainApp.status == .enabled
         statusBar.onQuit = {
             NSApplication.shared.terminate(nil)
         }
@@ -64,11 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar.onStopRecording = { [weak self] in
             self?.stopRecordingSession()
         }
-        statusBar.onLanguageChanged = { [weak self] language in
-            self?.transcriptionEngine.selectedLanguage = language
-        }
-        statusBar.onLaunchAtLoginToggled = { [weak self] in
-            self?.toggleLaunchAtLogin()
+        statusBar.onOpenSettings = { [weak self] in
+            self?.showSettings()
         }
     }
 
@@ -91,39 +89,112 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Launch at Login
+    // MARK: - Settings window
 
-    private func toggleLaunchAtLogin() {
-        let service = SMAppService.mainApp
-        if service.status == .enabled {
-            do {
-                try service.unregister()
-            } catch {
-                logger.error("Failed to disable launch at login: \(error)")
-            }
-        } else {
-            do {
-                try service.register()
-            } catch {
-                logger.error("Failed to enable launch at login: \(error)")
+    private func showSettings() {
+        if let existing = settingsWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+            return
+        }
+
+        let hostingController = NSHostingController(rootView: SettingsView(settings: settings))
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "NeverDrop Settings"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(NSSize(width: 450, height: 200))
+        window.center()
+        window.isReleasedWhenClosed = false
+        settingsWindow = window
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+    }
+
+    // MARK: - Transcription service management
+
+    private func makeTranscriptionService() -> any TranscriptionService {
+        let service: any TranscriptionService
+        switch settings.transcriptionProvider {
+        case .whisperLocal:
+            service = WhisperTranscriptionService()
+        case .sonioxCloud:
+            service = SonioxTranscriptionService(apiKey: settings.sonioxAPIKey)
+        case .openaiCloud:
+            service = OpenAITranscriptionService(apiKey: settings.openaiAPIKey)
+        }
+        service.selectedLanguage = settings.selectedLanguage
+        return service
+    }
+
+    private func prepareTranscriptionService() async {
+        let service = makeTranscriptionService()
+        transcriptionService = service
+
+        do {
+            try await service.prepare()
+        } catch {
+            logger.error("Transcription service failed to prepare: \(error)")
+            statusBar.updateState(.error("Transcription service failed to initialize"))
+        }
+    }
+
+    private func observeProviderChanges() {
+        withObservationTracking {
+            _ = settings.transcriptionProvider
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.handleProviderChange()
             }
         }
-        statusBar.isLaunchAtLoginEnabled = service.status == .enabled
+    }
+
+    private func handleProviderChange() {
+        let wasRecording = audioCapture != nil
+        if wasRecording {
+            transcriptionService?.stopTranscribing()
+        }
+
+        Task {
+            await prepareTranscriptionService()
+
+            if wasRecording, let capture = audioCapture, let service = transcriptionService, service.isReady {
+                service.selectedLanguage = settings.selectedLanguage
+                service.startTranscribing(audioSource: capture, writer: transcriptWriter)
+            }
+
+            observeProviderChanges()
+        }
+    }
+
+    // MARK: - Permissions
+
+    private func probeScreenCapturePermission() {
+        let tap = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        var tapID: AudioObjectID = kAudioObjectUnknown
+        if AudioHardwareCreateProcessTap(tap, &tapID) == noErr {
+            AudioHardwareDestroyProcessTap(tapID)
+        }
     }
 
     // MARK: - Call lifecycle
 
     private func onCallDetected() {
-        guard transcriptionEngine.isModelLoaded else {
-            logger.warning("Call detected but transcription model not loaded")
+        guard transcriptionService?.isReady == true else {
+            logger.warning("Call detected but transcription service not ready")
             return
         }
-        statusBar.updateState(.callDetected)
-        permissionPanel.show()
+
+        if settings.autoRecordCalls {
+            startRecordingSession()
+        } else {
+            statusBar.updateState(.callDetected)
+            permissionPanel.show()
+        }
     }
 
     private func startRecordingSession() {
-        callDetector.userAcceptedTranscription()
         statusBar.updateState(.recording)
 
         let capture = AudioCaptureManager()
@@ -138,6 +209,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let aggregateID = capture.aggregateDeviceID
+        let inputID = capture.inputDeviceID
+        if aggregateID != kAudioObjectUnknown {
+            callDetector.excludeDevice(aggregateID)
+        }
+        if inputID != kAudioObjectUnknown {
+            callDetector.excludeDevice(inputID)
+        }
+
         do {
             try transcriptWriter.open()
         } catch {
@@ -147,15 +227,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        transcriptionEngine.startTranscribing(audioSource: capture, writer: transcriptWriter)
+        callDetector.userAcceptedTranscription()
+
+        guard let service = transcriptionService else { return }
+        service.selectedLanguage = settings.selectedLanguage
+        service.startTranscribing(audioSource: capture, writer: transcriptWriter)
     }
 
     private func stopRecordingSession() {
-        transcriptionEngine.stopTranscribing()
+        transcriptionService?.stopTranscribing()
         audioCapture?.stopCapture()
         audioCapture = nil
         transcriptWriter.close()
         permissionPanel.dismiss()
+        callDetector.clearExclusions()
         callDetector.resetToIdle()
         statusBar.updateState(.idle)
     }

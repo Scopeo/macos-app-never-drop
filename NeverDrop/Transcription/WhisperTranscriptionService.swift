@@ -7,9 +7,9 @@ private let logger = Logger.app(category: "Transcription")
 
 @MainActor
 @Observable
-final class TranscriptionEngine {
+final class WhisperTranscriptionService: TranscriptionService {
 
-    private(set) var isModelLoaded = false
+    private(set) var isReady = false
     private(set) var isTranscribing = false
     private(set) var currentHypothesis: String = ""
     private(set) var modelLoadingProgress: String = "Loading model..."
@@ -31,21 +31,19 @@ final class TranscriptionEngine {
     private var recordingStartDate: Date?
     private var sampleRate: Double = 16_000
 
-    // MARK: - Model management
+    // MARK: - TranscriptionService
 
-    func loadModel() async throws {
+    func prepare() async throws {
         modelLoadingProgress = "Downloading model..."
         let config = WhisperKitConfig(model: "base", verbose: false)
         let kit = try await WhisperKit(config)
         whisperKit = kit
-        isModelLoaded = true
+        isReady = true
         modelLoadingProgress = "Model ready"
     }
 
-    // MARK: - Transcription lifecycle
-
     func startTranscribing(audioSource: any AudioSource, writer: any TranscriptionWriting) {
-        guard isModelLoaded, !isTranscribing else { return }
+        guard isReady, !isTranscribing else { return }
         isTranscribing = true
         micAccumulated.removeAll()
         micLastConfirmedEnd = 0
@@ -97,7 +95,7 @@ final class TranscriptionEngine {
                 "mic: \(newMic.count) new / \(self.micAccumulated.count) total, rms=\(micRMS, format: .fixed(precision: 6)) | sys: \(newSystem.count) new / \(self.systemAccumulated.count) total, rms=\(sysRMS, format: .fixed(precision: 6))"
             )
 
-            var confirmed: [(speaker: Speaker, text: String, timestamp: TimeInterval)] = []
+            var confirmed: [(speaker: Speaker, text: String, sortKey: TimeInterval)] = []
             var latestHypothesis: String = ""
 
             if micRMS > silenceRMSThreshold {
@@ -120,9 +118,9 @@ final class TranscriptionEngine {
                 if !result.hypothesis.isEmpty { latestHypothesis = result.hypothesis }
             }
 
-            confirmed.sort { $0.timestamp < $1.timestamp }
+            confirmed.sort { $0.sortKey < $1.sortKey }
             for seg in confirmed {
-                writer.append(text: seg.text, timestamp: seg.timestamp, speaker: seg.speaker)
+                writer.append(text: seg.text, speaker: seg.speaker)
             }
             currentHypothesis = latestHypothesis
         }
@@ -131,7 +129,7 @@ final class TranscriptionEngine {
     // MARK: - Per-stream transcription
 
     private struct StreamResult {
-        var confirmed: [(speaker: Speaker, text: String, timestamp: TimeInterval)]
+        var confirmed: [(speaker: Speaker, text: String, sortKey: TimeInterval)]
         var hypothesis: String
         var updatedLastConfirmedEnd: Float
     }
@@ -162,7 +160,7 @@ final class TranscriptionEngine {
         let bufferHeadSeconds = Float(samples.count) / Float(sampleRate)
         let confirmThreshold = bufferHeadSeconds - confirmationLag
 
-        var confirmed: [(speaker: Speaker, text: String, timestamp: TimeInterval)] = []
+        var confirmed: [(speaker: Speaker, text: String, sortKey: TimeInterval)] = []
         var hypothesis = ""
         var newLastConfirmedEnd = lastConfirmedEnd
 
@@ -172,14 +170,7 @@ final class TranscriptionEngine {
                 guard !cleanedText.isEmpty else { continue }
 
                 if segment.end <= confirmThreshold {
-                    let timestamp: TimeInterval
-                    if let startDate = recordingStartDate {
-                        timestamp = max(0, Date().timeIntervalSince(startDate)
-                            - TimeInterval(bufferHeadSeconds - segment.start))
-                    } else {
-                        timestamp = TimeInterval(segment.start)
-                    }
-                    confirmed.append((speaker: speaker, text: cleanedText, timestamp: timestamp))
+                    confirmed.append((speaker: speaker, text: cleanedText, sortKey: TimeInterval(segment.start)))
                     newLastConfirmedEnd = max(newLastConfirmedEnd, segment.end)
                 } else {
                     hypothesis = cleanedText

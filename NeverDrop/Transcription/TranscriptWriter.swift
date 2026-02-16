@@ -43,20 +43,18 @@ final class TranscriptWriter: TranscriptionWriting {
 
     // MARK: - TranscriptionWriting
 
-    func append(text: String, timestamp: TimeInterval, speaker: Speaker) {
+    func append(text: String, speaker: Speaker) {
         guard let handle = fileHandle else { return }
 
         var output = ""
 
         if speaker != lastSpeaker {
             if lastSpeaker != nil { output += "\n" }
-            output += "\(speaker.rawValue):\n"
+            output += "\(speaker.displayLabel):\n"
             lastSpeaker = speaker
         }
 
-        let minutes = Int(timestamp) / 60
-        let seconds = Int(timestamp) % 60
-        output += "[\(String(format: "%02d:%02d", minutes, seconds))] \(text)\n"
+        output += "\(text)\n"
 
         guard let data = output.data(using: .utf8) else { return }
         handle.write(data)

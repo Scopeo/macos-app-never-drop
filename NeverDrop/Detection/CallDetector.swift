@@ -1,3 +1,4 @@
+import CoreAudio
 import Foundation
 
 enum CallState: String, Sendable {
@@ -24,7 +25,7 @@ final class CallDetector {
     init(
         micMonitor: any MicrophoneMonitoring = MicrophoneMonitor(),
         activationDelay: Duration = .seconds(3),
-        deactivationDelay: Duration = .seconds(30)
+        deactivationDelay: Duration = .seconds(5)
     ) {
         self.micMonitor = micMonitor
         self.activationDelay = activationDelay
@@ -72,7 +73,15 @@ final class CallDetector {
         state = .idle
     }
 
-    // MARK: - Internal
+    func excludeDevice(_ deviceID: AudioDeviceID) {
+        micMonitor.excludeDevice(deviceID)
+    }
+
+    func clearExclusions() {
+        micMonitor.clearExclusions()
+    }
+
+    // MARK: - Mic monitoring (call detection)
 
     private func handleMicChange(isActive: Bool) {
         debounceTask?.cancel()

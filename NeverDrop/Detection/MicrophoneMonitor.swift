@@ -4,6 +4,7 @@ import Foundation
 final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
 
     private var trackedDevices = Set<AudioDeviceID>()
+    private var excludedDeviceIDs = Set<AudioDeviceID>()
     private var listenerBlocks = [AudioDeviceID: AudioObjectPropertyListenerBlock]()
     private var deviceListListenerBlock: AudioObjectPropertyListenerBlock?
     private var continuation: AsyncStream<Bool>.Continuation?
@@ -30,6 +31,14 @@ final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
                 self?.queue.async { self?.stopMonitoring() }
             }
         }
+    }
+
+    func excludeDevice(_ deviceID: AudioDeviceID) {
+        queue.sync { excludedDeviceIDs.insert(deviceID) }
+    }
+
+    func clearExclusions() {
+        queue.sync { excludedDeviceIDs.removeAll() }
     }
 
     // MARK: - Monitoring lifecycle
@@ -100,7 +109,11 @@ final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
     // MARK: - Status check
 
     private func checkAndEmit() {
-        let current = trackedDevices.contains { Self.isDeviceRunning($0) }
+        let candidates = trackedDevices.subtracting(excludedDeviceIDs)
+        let current = candidates.contains {
+            Self.isDeviceRunning($0) && !Self.isDeviceRunningLocally($0)
+        }
+
         if lastStatus != current {
             lastStatus = current
             continuation?.yield(current)
@@ -172,7 +185,33 @@ final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
         return isRunning != 0
     }
 
+    static func isDeviceRunningLocally(_ deviceID: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunning,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var isRunning: UInt32 = 0
+        var dataSize = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &isRunning) == noErr
+        else { return false }
+        return isRunning != 0
+    }
+
     static func allInputDeviceIDs() -> [AudioDeviceID] {
         allDeviceIDs().filter { hasInputStreams($0) }
+    }
+
+    static func deviceName(_ deviceID: AudioDeviceID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var name: Unmanaged<CFString>?
+        var dataSize = UInt32(MemoryLayout<Unmanaged<CFString>>.size)
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &name) == noErr,
+              let cfStr = name?.takeUnretainedValue() else { return nil }
+        return cfStr as String
     }
 }

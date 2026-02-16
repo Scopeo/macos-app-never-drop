@@ -8,7 +8,8 @@ private let logger = Logger.app(category: "AudioCapture")
 final class AudioCaptureManager: AudioSource, @unchecked Sendable {
 
     private var tapID: AudioObjectID = kAudioObjectUnknown
-    private var aggregateDeviceID: AudioObjectID = kAudioObjectUnknown
+    private(set) var aggregateDeviceID: AudioObjectID = kAudioObjectUnknown
+    private(set) var inputDeviceID: AudioDeviceID = kAudioObjectUnknown
     private var ioProcID: AudioDeviceIOProcID?
     private var tapUUID = UUID()
 
@@ -17,12 +18,10 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
     private var monoSourceFormat: AVAudioFormat?
     private var sourceSampleRate: Double = 48_000
     private var tapChannelCount: Int = 2
-    private var micBuffersFirst = false
 
     private let lock = NSLock()
     private var systemSampleBuffer: [Float] = []
     private var micSampleBuffer: [Float] = []
-    private var didLogBufferLayout = false
 
     private let captureQueue = DispatchQueue(label: "com.draftnrun.NeverDrop.AudioCapture", qos: .userInteractive)
     private(set) var isCapturing = false
@@ -60,27 +59,27 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
 
         let outputUID = try readDefaultDeviceUID(scope: kAudioHardwarePropertyDefaultOutputDevice)
         let inputUID = try readDefaultDeviceUID(scope: kAudioHardwarePropertyDefaultInputDevice)
+        inputDeviceID = try deviceIDForUID(inputUID)
 
         let outputRate = try readDeviceSampleRate(uid: outputUID)
         let inputRate = try readDeviceSampleRate(uid: inputUID)
-        let masterUID = inputRate <= outputRate ? inputUID : outputUID
-        micBuffersFirst = (masterUID == inputUID)
+        let clockSourceUID = inputRate <= outputRate ? inputUID : outputUID
 
         let aggDesc: [String: Any] = [
             kAudioAggregateDeviceNameKey: "NeverDrop-Capture",
             kAudioAggregateDeviceUIDKey: UUID().uuidString,
-            kAudioAggregateDeviceMainSubDeviceKey: masterUID,
+            kAudioAggregateDeviceMainSubDeviceKey: clockSourceUID,
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
             kAudioAggregateDeviceTapAutoStartKey: true,
             kAudioAggregateDeviceSubDeviceListKey: [
                 [
-                    kAudioSubDeviceUIDKey: outputUID,
-                    kAudioSubDeviceDriftCompensationKey: true,
-                ],
-                [
                     kAudioSubDeviceUIDKey: inputUID,
                     kAudioSubDeviceDriftCompensationKey: false,
+                ],
+                [
+                    kAudioSubDeviceUIDKey: outputUID,
+                    kAudioSubDeviceDriftCompensationKey: true,
                 ],
             ],
             kAudioAggregateDeviceTapListKey: [
@@ -147,7 +146,6 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
             throw AudioCaptureError.failedToStart(startErr)
         }
 
-        didLogBufferLayout = false
         isCapturing = true
     }
 
@@ -187,38 +185,15 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
         let firstBufFrames = Int(firstBuf.mDataByteSize) / (bytesPerSample * Int(max(firstBuf.mNumberChannels, 1)))
         guard firstBufFrames > 0 else { return }
 
-        let micRange: Range<Int>
-        let systemRange: Range<Int>
-
-        if micBuffersFirst {
-            var tapStart = bufCount
-            var tapChannelsFound = 0
-            for i in stride(from: bufCount - 1, through: 0, by: -1) {
-                tapChannelsFound += Int(max(ablPtr[i].mNumberChannels, 1))
-                tapStart = i
-                if tapChannelsFound >= tapChannelCount { break }
-            }
-            micRange = 0..<tapStart
-            systemRange = tapStart..<bufCount
-        } else {
-            var tapEnd = 0
-            var tapChannelsFound = 0
-            for i in 0..<bufCount {
-                tapChannelsFound += Int(max(ablPtr[i].mNumberChannels, 1))
-                tapEnd = i + 1
-                if tapChannelsFound >= tapChannelCount { break }
-            }
-            systemRange = 0..<tapEnd
-            micRange = tapEnd..<bufCount
+        var tapStart = bufCount
+        var tapChannelsFound = 0
+        for i in stride(from: bufCount - 1, through: 0, by: -1) {
+            tapChannelsFound += Int(max(ablPtr[i].mNumberChannels, 1))
+            tapStart = i
+            if tapChannelsFound >= tapChannelCount { break }
         }
-
-        if !didLogBufferLayout {
-            didLogBufferLayout = true
-            var desc = "IO buffer layout: \(bufCount) buffers, tapCh=\(tapChannelCount), micFirst=\(micBuffersFirst)."
-            for i in 0..<bufCount { desc += " buf[\(i)]: \(ablPtr[i].mNumberChannels)ch" }
-            desc += " → mic=\(micRange), sys=\(systemRange)"
-            logger.info("\(desc)")
-        }
+        let micRange = 0..<tapStart
+        let systemRange = tapStart..<bufCount
 
         if !systemRange.isEmpty {
             let systemMono = downmixToMono(ablPtr, range: systemRange, frameCount: firstBufFrames)
@@ -298,7 +273,7 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
             inputBuffer.floatChannelData![0].update(from: src.baseAddress!, count: mono.count)
         }
 
-        let ratio = Self.targetSampleRate / sourceSampleRate
+        let ratio = Self.targetSampleRate / sourceFormat.sampleRate
         let outputFrameCapacity = AVAudioFrameCount(Double(mono.count) * ratio) + 1
         guard let outputBuffer = AVAudioPCMBuffer(
             pcmFormat: Self.targetFormat, frameCapacity: outputFrameCapacity
