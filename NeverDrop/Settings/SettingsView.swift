@@ -41,7 +41,6 @@ struct SettingsView: View {
             }
 
             Section("General") {
-                Toggle("Record calls automatically", isOn: $settings.autoRecordCalls)
                 Toggle("Launch at Login", isOn: $settings.isLaunchAtLoginEnabled)
             }
         }

@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var transcriptionService: (any TranscriptionService)?
     private var settingsWindow: NSWindow?
+    private var micProbeTask: Task<Void, Never>?
 
     // MARK: - NSApplicationDelegate
 
@@ -175,12 +176,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if settings.autoRecordCalls {
-            startRecordingSession()
-        } else {
-            statusBar.updateState(.callDetected)
-            permissionPanel.show()
-        }
+        statusBar.updateState(.callDetected)
+        permissionPanel.show()
     }
 
     private func startRecordingSession() {
@@ -217,9 +214,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let service = transcriptionService else { return }
         service.selectedLanguage = settings.selectedLanguage
         service.startTranscribing(audioSource: capture, writer: transcriptWriter)
+
+        startMicProbe()
+    }
+
+    // MARK: - External mic probe
+
+    private func startMicProbe() {
+        micProbeTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                await self?.performMicProbe()
+            }
+        }
+    }
+
+    private func performMicProbe() async {
+        guard let capture = audioCapture, callDetector.state == .recording else { return }
+
+        let micDeviceID = capture.inputDeviceID
+        guard micDeviceID != kAudioObjectUnknown else { return }
+
+        capture.stopCapture()
+        try? await Task.sleep(for: .milliseconds(50))
+        guard !Task.isCancelled else { return }
+
+        let micStillExternallyActive = MicrophoneMonitor.isDeviceRunning(micDeviceID)
+
+        if micStillExternallyActive {
+            do {
+                try capture.startCapture()
+                let aggregateID = capture.aggregateDeviceID
+                if aggregateID != kAudioObjectUnknown {
+                    callDetector.excludeDevice(aggregateID)
+                }
+            } catch {
+                logger.error("Failed to restart audio capture after probe: \(error)")
+                stopRecordingSession()
+            }
+        } else {
+            logger.info("Mic no longer in external use — ending recording session")
+            stopRecordingSession()
+        }
     }
 
     private func stopRecordingSession() {
+        micProbeTask?.cancel()
+        micProbeTask = nil
         transcriptionService?.stopTranscribing()
         audioCapture?.stopCapture()
         audioCapture = nil

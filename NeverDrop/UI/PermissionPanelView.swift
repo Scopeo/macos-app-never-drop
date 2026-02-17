@@ -16,7 +16,7 @@ struct PermissionPanelView: View {
             Text("Call Detected")
                 .font(.headline)
 
-            Text("A microphone is active. Start transcribing this call?")
+            Text("Before starting transcription, make sure all participants have been informed and have given their consent.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

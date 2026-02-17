@@ -35,10 +35,6 @@ final class AppSettings {
         didSet { defaults.set(selectedLanguage, forKey: Keys.language) }
     }
 
-    var autoRecordCalls: Bool {
-        didSet { defaults.set(autoRecordCalls, forKey: Keys.autoRecord) }
-    }
-
     var isLaunchAtLoginEnabled: Bool {
         get { SMAppService.mainApp.status == .enabled }
         set {
@@ -58,7 +54,6 @@ final class AppSettings {
         static let sonioxAPIKey = "soniox_api_key"
         static let openaiAPIKey = "openai_api_key"
         static let language = "selected_language"
-        static let autoRecord = "auto_record_calls"
     }
 
     init() {
@@ -67,6 +62,5 @@ final class AppSettings {
         self.sonioxAPIKey = defaults.string(forKey: Keys.sonioxAPIKey) ?? ""
         self.openaiAPIKey = defaults.string(forKey: Keys.openaiAPIKey) ?? ""
         self.selectedLanguage = defaults.string(forKey: Keys.language)
-        self.autoRecordCalls = defaults.bool(forKey: Keys.autoRecord)
     }
 }
