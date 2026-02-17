@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let logger = Logger.app(category: "TranscriptWriter")
 
 final class TranscriptWriter: TranscriptionWriting {
 
@@ -6,6 +9,8 @@ final class TranscriptWriter: TranscriptionWriting {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport.appendingPathComponent("com.draftnrun.NeverDrop/Transcripts").path
     }()
+
+    var userName: String = ""
 
     private let directoryURL: URL
     private var fileHandle: FileHandle?
@@ -35,7 +40,11 @@ final class TranscriptWriter: TranscriptionWriting {
     }
 
     func close() {
-        try? fileHandle?.close()
+        do {
+            try fileHandle?.close()
+        } catch {
+            logger.error("Failed to close transcript file: \(error)")
+        }
         fileHandle = nil
         currentFileURL = nil
         lastSpeaker = nil
@@ -43,14 +52,17 @@ final class TranscriptWriter: TranscriptionWriting {
 
     // MARK: - TranscriptionWriting
 
-    func append(text: String, speaker: Speaker) {
+    func append(text: String, speaker: Speaker, relativeTime: TimeInterval) {
         guard let handle = fileHandle else { return }
 
         var output = ""
 
         if speaker != lastSpeaker {
             if lastSpeaker != nil { output += "\n" }
-            output += "\(speaker.displayLabel):\n"
+            let minutes = Int(relativeTime) / 60
+            let seconds = Int(relativeTime) % 60
+            let timestamp = String(format: "[%02d:%02d]", minutes, seconds)
+            output += "\(timestamp) \(speaker.label(userName: userName)):\n"
             lastSpeaker = speaker
         }
 

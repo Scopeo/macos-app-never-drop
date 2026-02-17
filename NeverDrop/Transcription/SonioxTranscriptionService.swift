@@ -13,13 +13,23 @@ final class SonioxTranscriptionService: TranscriptionService {
     var selectedLanguage: String?
 
     private let apiKey: String
-    private var webSocketTask: URLSessionWebSocketTask?
-    private var sendTask: Task<Void, Never>?
-    private var receiveTask: Task<Void, Never>?
+
+    private var micWebSocket: URLSessionWebSocketTask?
+    private var systemWebSocket: URLSessionWebSocketTask?
+    private var micSendTask: Task<Void, Never>?
+    private var systemSendTask: Task<Void, Never>?
+    private var micReceiveTask: Task<Void, Never>?
+    private var systemReceiveTask: Task<Void, Never>?
+
     private var isTranscribing = false
     private var writer: (any TranscriptionWriting)?
-    private var pendingUtterance = ""
-    private var pendingUtteranceSpeaker: String?
+
+    private var micPendingUtterance = ""
+    private var systemPendingUtterance = ""
+    private var systemPendingUtteranceSpeaker: String?
+    private var speakerMapping: [String: String] = [:]
+    private var nextSpeakerNumber = 1
+    private var recordingStartDate: Date?
 
     private static let sonioxURL = URL(string: "wss://stt-rt.soniox.com/transcribe-websocket")!
     private static let pollingInterval: Duration = .milliseconds(120)
@@ -41,32 +51,56 @@ final class SonioxTranscriptionService: TranscriptionService {
         guard isReady, !isTranscribing else { return }
         isTranscribing = true
         self.writer = writer
-        pendingUtterance = ""
-        pendingUtteranceSpeaker = nil
+        micPendingUtterance = ""
+        systemPendingUtterance = ""
+        systemPendingUtteranceSpeaker = nil
+        speakerMapping = [:]
+        nextSpeakerNumber = 1
+        recordingStartDate = Date()
 
-        let task = URLSession.shared.webSocketTask(with: Self.sonioxURL)
-        webSocketTask = task
-        task.resume()
+        let sampleRate = Int(audioSource.sampleRate)
 
-        let config = buildConfig(sampleRate: Int(audioSource.sampleRate))
-        let configMessage = URLSessionWebSocketTask.Message.string(config)
+        let micTask = URLSession.shared.webSocketTask(with: Self.sonioxURL)
+        micWebSocket = micTask
+        micTask.resume()
 
-        sendTask = Task { [weak self] in
+        let systemTask = URLSession.shared.webSocketTask(with: Self.sonioxURL)
+        systemWebSocket = systemTask
+        systemTask.resume()
+
+        let micConfig = buildConfig(sampleRate: sampleRate, enableDiarization: false)
+        let systemConfig = buildConfig(sampleRate: sampleRate, enableDiarization: true)
+
+        micSendTask = Task { [weak self] in
             guard let self else { return }
-
             do {
-                try await task.send(configMessage)
+                try await micTask.send(.string(micConfig))
             } catch {
-                logger.error("Failed to send Soniox config: \(error)")
+                logger.error("Failed to send Soniox mic config: \(error)")
                 return
             }
-
-            await self.audioStreamLoop(task: task, audioSource: audioSource)
+            await self.audioStreamLoop(task: micTask, audioSource: audioSource, channel: .mic)
         }
 
-        receiveTask = Task { [weak self] in
+        systemSendTask = Task { [weak self] in
             guard let self else { return }
-            await self.receiveLoop(task: task, writer: writer)
+            do {
+                try await systemTask.send(.string(systemConfig))
+            } catch {
+                logger.error("Failed to send Soniox system config: \(error)")
+                return
+            }
+            await self.audioStreamLoop(task: systemTask, audioSource: audioSource, channel: .system)
+        }
+
+        micReceiveTask = Task { [weak self] in
+            guard let self else { return }
+            await self.receiveLoop(task: micTask, writer: writer, channel: .mic)
+        }
+
+        systemReceiveTask = Task { [weak self] in
+            guard let self else { return }
+            await self.receiveLoop(task: systemTask, writer: writer, channel: .system)
         }
     }
 
@@ -74,44 +108,51 @@ final class SonioxTranscriptionService: TranscriptionService {
         guard isTranscribing else { return }
         isTranscribing = false
 
-        if let writer { flushUtterance(writer: writer) }
+        if let writer {
+            flushMicUtterance(writer: writer)
+            flushSystemUtterance(writer: writer)
+        }
         self.writer = nil
 
-        sendTask?.cancel()
-        sendTask = nil
-        receiveTask?.cancel()
-        receiveTask = nil
+        micSendTask?.cancel()
+        micSendTask = nil
+        systemSendTask?.cancel()
+        systemSendTask = nil
+        micReceiveTask?.cancel()
+        micReceiveTask = nil
+        systemReceiveTask?.cancel()
+        systemReceiveTask = nil
 
-        if let task = webSocketTask {
-            let endSignal = URLSessionWebSocketTask.Message.string("")
-            Task {
-                try? await task.send(endSignal)
-                task.cancel(with: .normalClosure, reason: nil)
-            }
-        }
-        webSocketTask = nil
+        closeWebSocket(micWebSocket)
+        micWebSocket = nil
+        closeWebSocket(systemWebSocket)
+        systemWebSocket = nil
     }
 
     // MARK: - Audio streaming
 
-    private func audioStreamLoop(task: URLSessionWebSocketTask, audioSource: any AudioSource) async {
+    private enum AudioChannel {
+        case mic, system
+    }
+
+    private func audioStreamLoop(task: URLSessionWebSocketTask, audioSource: any AudioSource, channel: AudioChannel) async {
         while isTranscribing, !Task.isCancelled {
             do {
                 try await Task.sleep(for: Self.pollingInterval)
-            } catch {
-                break
+            } catch { break }
+
+            let samples: [Float]
+            switch channel {
+            case .mic: samples = audioSource.drainMicSamples()
+            case .system: samples = audioSource.drainSystemSamples()
             }
+            guard !samples.isEmpty else { continue }
 
-            let mic = audioSource.drainMicSamples()
-            let system = audioSource.drainSystemSamples()
-            let mixed = mixToMono(mic: mic, system: system)
-            guard !mixed.isEmpty else { continue }
-
-            let pcmData = floatToPCMS16LE(mixed)
+            let pcmData = floatToPCMS16LE(samples)
             do {
                 try await task.send(.data(pcmData))
             } catch {
-                logger.error("Failed to send audio data: \(error)")
+                logger.error("Failed to send \(String(describing: channel)) audio data: \(error)")
                 break
             }
         }
@@ -119,14 +160,14 @@ final class SonioxTranscriptionService: TranscriptionService {
 
     // MARK: - Receive loop
 
-    private func receiveLoop(task: URLSessionWebSocketTask, writer: any TranscriptionWriting) async {
+    private func receiveLoop(task: URLSessionWebSocketTask, writer: any TranscriptionWriting, channel: AudioChannel) async {
         while !Task.isCancelled {
             let message: URLSessionWebSocketTask.Message
             do {
                 message = try await task.receive()
             } catch {
                 if isTranscribing {
-                    logger.error("WebSocket receive error: \(error)")
+                    logger.error("Soniox \(String(describing: channel)) WebSocket receive error: \(error)")
                 }
                 break
             }
@@ -137,14 +178,14 @@ final class SonioxTranscriptionService: TranscriptionService {
             else { continue }
 
             if let code = response.errorCode {
-                logger.error("Soniox error \(code): \(response.errorMessage ?? "unknown")")
+                logger.error("Soniox \(String(describing: channel)) error \(code): \(response.errorMessage ?? "unknown")")
                 break
             }
 
-            await processTokens(response.tokens, writer: writer)
+            await processTokens(response.tokens, writer: writer, channel: channel)
 
             if response.finished == true {
-                logger.info("Soniox session finished")
+                logger.info("Soniox \(String(describing: channel)) session finished")
                 break
             }
         }
@@ -152,44 +193,74 @@ final class SonioxTranscriptionService: TranscriptionService {
 
     // MARK: - Token processing
 
-    private func processTokens(_ tokens: [SonioxToken]?, writer: any TranscriptionWriting) async {
+    private func processTokens(_ tokens: [SonioxToken]?, writer: any TranscriptionWriting, channel: AudioChannel) async {
         guard let tokens else { return }
 
         for token in tokens {
             guard token.isFinal, let text = token.text, !text.isEmpty else { continue }
 
             if text.hasPrefix("<") {
-                flushUtterance(writer: writer)
+                switch channel {
+                case .mic: flushMicUtterance(writer: writer)
+                case .system: flushSystemUtterance(writer: writer)
+                }
                 continue
             }
 
-            let speaker = token.speaker ?? "0"
-            if speaker != pendingUtteranceSpeaker {
-                flushUtterance(writer: writer)
-                pendingUtteranceSpeaker = speaker
+            switch channel {
+            case .mic:
+                micPendingUtterance += text
+
+            case .system:
+                let speaker = token.speaker ?? "0"
+                if speaker != systemPendingUtteranceSpeaker {
+                    flushSystemUtterance(writer: writer)
+                    systemPendingUtteranceSpeaker = speaker
+                }
+                systemPendingUtterance += text
             }
-            pendingUtterance += text
         }
     }
 
-    private func flushUtterance(writer: any TranscriptionWriting) {
-        let trimmed = pendingUtterance.trimmingCharacters(in: .whitespaces)
-        if !trimmed.isEmpty, let speaker = pendingUtteranceSpeaker {
-            writer.append(text: trimmed, speaker: .identified(speaker))
+    private func flushMicUtterance(writer: any TranscriptionWriting) {
+        let trimmed = micPendingUtterance.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty {
+            let relativeTime = recordingStartDate.map { Date().timeIntervalSince($0) } ?? 0
+            writer.append(text: trimmed, speaker: .you, relativeTime: relativeTime)
         }
-        pendingUtterance = ""
+        micPendingUtterance = ""
+    }
+
+    private func flushSystemUtterance(writer: any TranscriptionWriting) {
+        let trimmed = systemPendingUtterance.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty, let apiID = systemPendingUtteranceSpeaker {
+            let mappedID = mapSpeaker(apiID)
+            let relativeTime = recordingStartDate.map { Date().timeIntervalSince($0) } ?? 0
+            writer.append(text: trimmed, speaker: .identified(mappedID), relativeTime: relativeTime)
+        }
+        systemPendingUtterance = ""
+    }
+
+    // MARK: - Speaker mapping
+
+    private func mapSpeaker(_ apiID: String) -> String {
+        if let mapped = speakerMapping[apiID] { return mapped }
+        let number = String(nextSpeakerNumber)
+        speakerMapping[apiID] = number
+        nextSpeakerNumber += 1
+        return number
     }
 
     // MARK: - Config
 
-    private func buildConfig(sampleRate: Int) -> String {
+    private func buildConfig(sampleRate: Int, enableDiarization: Bool) -> String {
         var config: [String: Any] = [
             "api_key": apiKey,
             "model": "stt-rt-v4",
             "audio_format": "pcm_s16le",
             "sample_rate": sampleRate,
             "num_channels": 1,
-            "enable_speaker_diarization": true,
+            "enable_speaker_diarization": enableDiarization,
             "enable_endpoint_detection": true,
         ]
 
@@ -197,34 +268,31 @@ final class SonioxTranscriptionService: TranscriptionService {
             config["language_hints"] = [lang]
         }
 
-        guard let data = try? JSONSerialization.data(withJSONObject: config),
-              let json = String(data: data, encoding: .utf8)
-        else { return "{}" }
-        return json
+        do {
+            let data = try JSONSerialization.data(withJSONObject: config)
+            guard let json = String(data: data, encoding: .utf8) else {
+                logger.error("Failed to encode Soniox config as UTF-8")
+                return "{}"
+            }
+            return json
+        } catch {
+            logger.error("Failed to serialize Soniox config: \(error)")
+            return "{}"
+        }
     }
 
-    // MARK: - Audio helpers
+    // MARK: - Helpers
 
-    private func mixToMono(mic: [Float], system: [Float]) -> [Float] {
-        let count = max(mic.count, system.count)
-        guard count > 0 else { return [] }
-        var mixed = [Float](repeating: 0, count: count)
-        for i in 0..<mic.count { mixed[i] += mic[i] }
-        for i in 0..<system.count { mixed[i] += system[i] }
-        let scale: Float = 0.5
-        for i in 0..<count { mixed[i] *= scale }
-        return mixed
+    private func closeWebSocket(_ task: URLSessionWebSocketTask?) {
+        guard let task else { return }
+        Task {
+            try? await task.send(.string(""))
+            task.cancel(with: .normalClosure, reason: nil)
+        }
     }
 
     private func floatToPCMS16LE(_ samples: [Float]) -> Data {
-        var data = Data(capacity: samples.count * 2)
-        for sample in samples {
-            let clamped = max(-1.0, min(1.0, sample))
-            let int16 = Int16(clamped * Float(Int16.max))
-            var le = int16.littleEndian
-            data.append(Data(bytes: &le, count: 2))
-        }
-        return data
+        AudioEncoding.floatToPCMS16LE(samples)
     }
 }
 

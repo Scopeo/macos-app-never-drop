@@ -1,4 +1,5 @@
 @testable import NeverDrop
+import CoreAudio
 import XCTest
 
 final class MockMicMonitor: MicrophoneMonitoring, @unchecked Sendable {
@@ -11,6 +12,9 @@ final class MockMicMonitor: MicrophoneMonitoring, @unchecked Sendable {
     func emit(_ active: Bool) {
         continuation?.yield(active)
     }
+
+    func excludeDevice(_ deviceID: AudioDeviceID) {}
+    func clearExclusions() {}
 }
 
 @MainActor
@@ -137,6 +141,87 @@ final class CallDetectorTests: XCTestCase {
 
         detector.stopRecording()
         XCTAssertEqual(callEndedCount, 1)
+        detector.stopMonitoring()
+    }
+
+    func testCooldownBlocksImmediateRedetection() async throws {
+        let mock = MockMicMonitor()
+        let detector = CallDetector(
+            micMonitor: mock,
+            activationDelay: .milliseconds(50),
+            postStopCooldown: .seconds(10)
+        )
+
+        let detected = XCTestExpectation(description: "Call detected")
+        detector.onCallDetected = { detected.fulfill() }
+
+        detector.startMonitoring()
+        await Task.yield()
+        mock.emit(true)
+
+        await fulfillment(of: [detected], timeout: 1.0)
+        detector.userAcceptedTranscription()
+        detector.resetToIdle()
+        XCTAssertEqual(detector.state, .idle)
+
+        let notDetected = XCTestExpectation(description: "Should not detect")
+        notDetected.isInverted = true
+        detector.onCallDetected = { notDetected.fulfill() }
+
+        mock.emit(true)
+        await fulfillment(of: [notDetected], timeout: 0.3)
+        XCTAssertEqual(detector.state, .idle)
+        detector.stopMonitoring()
+    }
+
+    func testDeactivationDuringRecordingTriggersEnd() async throws {
+        let mock = MockMicMonitor()
+        let detector = CallDetector(
+            micMonitor: mock,
+            activationDelay: .milliseconds(50),
+            deactivationDelay: .milliseconds(100)
+        )
+
+        let detected = XCTestExpectation(description: "Call detected")
+        detector.onCallDetected = { detected.fulfill() }
+
+        detector.startMonitoring()
+        await Task.yield()
+        mock.emit(true)
+
+        await fulfillment(of: [detected], timeout: 1.0)
+        detector.userAcceptedTranscription()
+        XCTAssertEqual(detector.state, .recording)
+
+        let ended = XCTestExpectation(description: "Call ended")
+        detector.onCallEnded = { ended.fulfill() }
+
+        mock.emit(false)
+        await fulfillment(of: [ended], timeout: 1.0)
+        XCTAssertEqual(detector.state, .idle)
+        detector.stopMonitoring()
+    }
+
+    func testMicDeactivationWhileCallDetectedResetsToIdle() async throws {
+        let mock = MockMicMonitor()
+        let detector = CallDetector(
+            micMonitor: mock,
+            activationDelay: .milliseconds(50)
+        )
+
+        let detected = XCTestExpectation(description: "Call detected")
+        detector.onCallDetected = { detected.fulfill() }
+
+        detector.startMonitoring()
+        await Task.yield()
+        mock.emit(true)
+
+        await fulfillment(of: [detected], timeout: 1.0)
+        XCTAssertEqual(detector.state, .callDetected)
+
+        mock.emit(false)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(detector.state, .idle)
         detector.stopMonitoring()
     }
 }

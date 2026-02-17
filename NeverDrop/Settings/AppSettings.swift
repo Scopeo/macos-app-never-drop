@@ -1,6 +1,9 @@
 import Foundation
 import Observation
+import os
 import ServiceManagement
+
+private let logger = Logger.app(category: "Settings")
 
 enum TranscriptionProvider: String, CaseIterable {
     case whisperLocal = "whisper_local"
@@ -35,14 +38,26 @@ final class AppSettings {
         didSet { defaults.set(selectedLanguage, forKey: Keys.language) }
     }
 
+    var userName: String {
+        didSet { defaults.set(userName, forKey: Keys.userName) }
+    }
+
     var isLaunchAtLoginEnabled: Bool {
         get { SMAppService.mainApp.status == .enabled }
         set {
             let service = SMAppService.mainApp
             if newValue {
-                try? service.register()
+                do {
+                    try service.register()
+                } catch {
+                    logger.error("Failed to enable launch at login: \(error)")
+                }
             } else {
-                try? service.unregister()
+                do {
+                    try service.unregister()
+                } catch {
+                    logger.error("Failed to disable launch at login: \(error)")
+                }
             }
         }
     }
@@ -54,6 +69,7 @@ final class AppSettings {
         static let sonioxAPIKey = "soniox_api_key"
         static let openaiAPIKey = "openai_api_key"
         static let language = "selected_language"
+        static let userName = "user_name"
     }
 
     init() {
@@ -62,5 +78,6 @@ final class AppSettings {
         self.sonioxAPIKey = defaults.string(forKey: Keys.sonioxAPIKey) ?? ""
         self.openaiAPIKey = defaults.string(forKey: Keys.openaiAPIKey) ?? ""
         self.selectedLanguage = defaults.string(forKey: Keys.language)
+        self.userName = defaults.string(forKey: Keys.userName) ?? ""
     }
 }

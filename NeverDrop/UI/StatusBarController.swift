@@ -78,7 +78,7 @@ final class StatusBarController: NSObject {
             newMenu.addItem(NSMenuItem.separator())
         }
 
-        let openItem = NSMenuItem(title: "Open Transcripts Folder", action: #selector(openTranscriptsAction), keyEquivalent: "o")
+        let openItem = NSMenuItem(title: "Transcripts...", action: #selector(openTranscriptsAction), keyEquivalent: "o")
         openItem.target = self
         newMenu.addItem(openItem)
 

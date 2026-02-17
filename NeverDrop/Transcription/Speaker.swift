@@ -1,12 +1,10 @@
 enum Speaker: Sendable, Equatable {
     case you
-    case others
     case identified(String)
 
-    var displayLabel: String {
+    func label(userName: String) -> String {
         switch self {
-        case .you: "You"
-        case .others: "Others"
+        case .you: userName.isEmpty ? "You" : userName
         case .identified(let id): "Speaker \(id)"
         }
     }

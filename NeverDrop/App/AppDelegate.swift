@@ -19,8 +19,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let transcriptWriter = TranscriptWriter()
     private var audioCapture: AudioCaptureManager?
 
+    private let transcriptStore = TranscriptStore()
+    private let mainWindowState = MainWindowState()
+
     private var transcriptionService: (any TranscriptionService)?
-    private var settingsWindow: NSWindow?
+    private var mainWindow: NSWindow?
     private var micProbeTask: Task<Void, Never>?
 
     // MARK: - NSApplicationDelegate
@@ -28,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
 
+        setupMainMenu()
         setupStatusBar()
         setupCallDetector()
         setupPermissionPanel()
@@ -58,15 +62,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar.onQuit = {
             NSApplication.shared.terminate(nil)
         }
-        statusBar.onOpenTranscripts = {
-            let url = URL(fileURLWithPath: TranscriptWriter.transcriptsDirectoryPath, isDirectory: true)
-            NSWorkspace.shared.open(url)
+        statusBar.onOpenTranscripts = { [weak self] in
+            self?.showMainWindow(tab: .transcripts)
         }
         statusBar.onStopRecording = { [weak self] in
             self?.stopRecordingSession()
         }
         statusBar.onOpenSettings = { [weak self] in
-            self?.showSettings()
+            self?.showMainWindow(tab: .settings)
         }
     }
 
@@ -89,23 +92,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Settings window
+    // MARK: - Main menu
 
-    private func showSettings() {
-        if let existing = settingsWindow {
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu(title: "Never Drop")
+        appMenu.addItem(withTitle: "About Never Drop", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Quit Never Drop", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        let windowMenuItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+
+        NSApplication.shared.mainMenu = mainMenu
+    }
+
+    // MARK: - Main window
+
+    private func showMainWindow(tab: MainWindowTab) {
+        mainWindowState.selectedTab = tab
+
+        if let existing = mainWindow {
+            if tab == .transcripts { transcriptStore.loadFiles() }
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate()
             return
         }
 
-        let hostingController = NSHostingController(rootView: SettingsView(settings: settings))
+        if tab == .transcripts { transcriptStore.loadFiles() }
+
+        let rootView = MainWindowView(
+            state: mainWindowState,
+            store: transcriptStore,
+            settings: settings
+        )
+        let hostingController = NSHostingController(rootView: rootView)
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "NeverDrop Settings"
-        window.styleMask = [.titled, .closable]
-        window.setContentSize(NSSize(width: 450, height: 200))
+        window.title = "Never Drop"
+        window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+        window.setContentSize(NSSize(width: 900, height: 600))
+        window.minSize = NSSize(width: 700, height: 480)
         window.center()
         window.isReleasedWhenClosed = false
-        settingsWindow = window
+        mainWindow = window
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate()
@@ -200,6 +244,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             callDetector.excludeDevice(aggregateID)
         }
 
+        transcriptWriter.userName = settings.userName
+
         do {
             try transcriptWriter.open()
         } catch {
@@ -240,7 +286,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? await Task.sleep(for: .milliseconds(50))
         guard !Task.isCancelled else { return }
 
-        let micStillExternallyActive = MicrophoneMonitor.isDeviceRunning(micDeviceID)
+        let micStillExternallyActive = MicrophoneMonitor.allInputDeviceIDs().contains {
+            MicrophoneMonitor.isDeviceRunning($0) && !MicrophoneMonitor.isDeviceRunningLocally($0)
+        }
 
         if micStillExternallyActive {
             do {

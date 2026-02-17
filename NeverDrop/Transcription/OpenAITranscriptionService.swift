@@ -16,6 +16,9 @@ final class OpenAITranscriptionService: TranscriptionService {
     private let apiKey: String
     private var transcribeTask: Task<Void, Never>?
     private var isTranscribing = false
+    private var speakerMapping: [String: String] = [:]
+    private var nextSpeakerNumber = 1
+    private var recordingStartDate: Date?
 
     private static let transcriptionURL = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
     private static let pollingInterval: Duration = .seconds(5)
@@ -37,6 +40,9 @@ final class OpenAITranscriptionService: TranscriptionService {
     func startTranscribing(audioSource: any AudioSource, writer: any TranscriptionWriting) {
         guard isReady, !isTranscribing else { return }
         isTranscribing = true
+        speakerMapping = [:]
+        nextSpeakerNumber = 1
+        recordingStartDate = Date()
 
         transcribeTask = Task { [weak self] in
             guard let self else { return }
@@ -55,41 +61,59 @@ final class OpenAITranscriptionService: TranscriptionService {
 
     private func transcriptionLoop(audioSource: any AudioSource, writer: any TranscriptionWriting) async {
         let sampleRate = audioSource.sampleRate
-        var accumulated: [Float] = []
+        var micAccumulated: [Float] = []
+        var systemAccumulated: [Float] = []
 
         while isTranscribing, !Task.isCancelled {
             do {
                 try await Task.sleep(for: Self.pollingInterval)
-            } catch {
-                break
-            }
+            } catch { break }
 
             let mic = audioSource.drainMicSamples()
             let system = audioSource.drainSystemSamples()
-            let mixed = mixToMono(mic: mic, system: system)
-            accumulated.append(contentsOf: mixed)
+            micAccumulated.append(contentsOf: mic)
+            systemAccumulated.append(contentsOf: system)
 
-            let durationSeconds = Double(accumulated.count) / sampleRate
-            guard durationSeconds >= Self.minChunkSeconds else { continue }
+            let micSeconds = Double(micAccumulated.count) / sampleRate
+            let systemSeconds = Double(systemAccumulated.count) / sampleRate
+            guard micSeconds >= Self.minChunkSeconds || systemSeconds >= Self.minChunkSeconds else { continue }
 
-            let wavData = createWAV(samples: accumulated, sampleRate: Int(sampleRate))
+            let micWav = micSeconds >= Self.minChunkSeconds
+                ? createWAV(samples: micAccumulated, sampleRate: Int(sampleRate))
+                : nil
+            let systemWav = systemSeconds >= Self.minChunkSeconds
+                ? createWAV(samples: systemAccumulated, sampleRate: Int(sampleRate))
+                : nil
+
+            if micWav != nil { micAccumulated.removeAll(keepingCapacity: true) }
+            if systemWav != nil { systemAccumulated.removeAll(keepingCapacity: true) }
 
             do {
-                let segments = try await sendTranscriptionRequest(wavData: wavData)
-                for segment in segments {
-                    writer.append(text: segment.text, speaker: .identified(segment.speaker))
+                async let micResult = transcribeMic(wavData: micWav)
+                async let systemResult = transcribeSystem(wavData: systemWav)
+
+                let micText = try await micResult
+                let systemSegments = try await systemResult
+
+                let relativeTime = self.recordingStartDate.map { Date().timeIntervalSince($0) } ?? 0
+                if let text = micText, !text.isEmpty {
+                    writer.append(text: text, speaker: .you, relativeTime: relativeTime)
+                }
+                for segment in systemSegments {
+                    let mappedID = mapSpeaker(segment.speaker)
+                    writer.append(text: segment.text, speaker: .identified(mappedID), relativeTime: relativeTime)
                 }
             } catch {
                 logger.error("OpenAI transcription request failed: \(error)")
             }
-
-            accumulated.removeAll(keepingCapacity: true)
         }
     }
 
-    // MARK: - REST API request
+    // MARK: - Mic transcription (simple, no diarization)
 
-    private func sendTranscriptionRequest(wavData: Data) async throws -> [DiarizedSegment] {
+    private func transcribeMic(wavData: Data?) async throws -> String? {
+        guard let wavData else { return nil }
+
         let boundary = UUID().uuidString
         var body = Data()
 
@@ -100,7 +124,55 @@ final class OpenAITranscriptionService: TranscriptionService {
         }
 
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"mic.wav\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
+        body.append(wavData)
+        body.append("\r\n".data(using: .utf8)!)
+
+        appendField("model", "gpt-4o-mini-transcribe")
+        appendField("response_format", "json")
+        if let lang = selectedLanguage {
+            appendField("language", lang)
+        }
+
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+
+        var request = URLRequest(url: Self.transcriptionURL)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw OpenAIError.unexpectedResponse("Non-HTTP response")
+        }
+        guard httpResponse.statusCode == 200 else {
+            let errorBody = String(data: data, encoding: .utf8) ?? "unknown"
+            throw OpenAIError.apiError(httpResponse.statusCode, errorBody)
+        }
+
+        let decoded = try JSONDecoder().decode(SimpleTranscriptionResponse.self, from: data)
+        return decoded.text
+    }
+
+    // MARK: - System transcription (diarized)
+
+    private func transcribeSystem(wavData: Data?) async throws -> [DiarizedSegment] {
+        guard let wavData else { return [] }
+
+        let boundary = UUID().uuidString
+        var body = Data()
+
+        func appendField(_ name: String, _ value: String) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(value)\r\n".data(using: .utf8)!)
+        }
+
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"system.wav\"\r\n".data(using: .utf8)!)
         body.append("Content-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
         body.append(wavData)
         body.append("\r\n".data(using: .utf8)!)
@@ -124,7 +196,6 @@ final class OpenAITranscriptionService: TranscriptionService {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OpenAIError.unexpectedResponse("Non-HTTP response")
         }
-
         guard httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8) ?? "unknown"
             throw OpenAIError.apiError(httpResponse.statusCode, errorBody)
@@ -132,6 +203,16 @@ final class OpenAITranscriptionService: TranscriptionService {
 
         let decoded = try JSONDecoder().decode(DiarizedResponse.self, from: data)
         return decoded.segments ?? []
+    }
+
+    // MARK: - Speaker mapping
+
+    private func mapSpeaker(_ apiID: String) -> String {
+        if let mapped = speakerMapping[apiID] { return mapped }
+        let number = String(nextSpeakerNumber)
+        speakerMapping[apiID] = number
+        nextSpeakerNumber += 1
+        return number
     }
 
     // MARK: - WAV encoding
@@ -166,26 +247,8 @@ final class OpenAITranscriptionService: TranscriptionService {
 
     // MARK: - Audio helpers
 
-    private func mixToMono(mic: [Float], system: [Float]) -> [Float] {
-        let count = max(mic.count, system.count)
-        guard count > 0 else { return [] }
-        var mixed = [Float](repeating: 0, count: count)
-        for i in 0..<mic.count { mixed[i] += mic[i] }
-        for i in 0..<system.count { mixed[i] += system[i] }
-        let scale: Float = 0.5
-        for i in 0..<count { mixed[i] *= scale }
-        return mixed
-    }
-
     private func floatToPCMS16LE(_ samples: [Float]) -> Data {
-        var data = Data(capacity: samples.count * 2)
-        for sample in samples {
-            let clamped = max(-1.0, min(1.0, sample))
-            let int16 = Int16(clamped * Float(Int16.max))
-            var le = int16.littleEndian
-            data.append(Data(bytes: &le, count: 2))
-        }
-        return data
+        AudioEncoding.floatToPCMS16LE(samples)
     }
 }
 
@@ -204,6 +267,10 @@ private extension Data {
 }
 
 // MARK: - Response types
+
+private struct SimpleTranscriptionResponse: Decodable {
+    let text: String
+}
 
 private struct DiarizedResponse: Decodable {
     let text: String?

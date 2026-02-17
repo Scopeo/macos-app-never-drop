@@ -18,6 +18,10 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Identity") {
+                TextField("Your Name", text: $settings.userName)
+            }
+
             Section("Transcription") {
                 Picker("Provider", selection: $settings.transcriptionProvider) {
                     ForEach(TranscriptionProvider.allCases, id: \.self) { provider in

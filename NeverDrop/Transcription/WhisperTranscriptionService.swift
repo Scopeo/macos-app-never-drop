@@ -75,9 +75,7 @@ final class WhisperTranscriptionService: TranscriptionService {
         while isTranscribing, !Task.isCancelled {
             do {
                 try await Task.sleep(for: pollingInterval)
-            } catch {
-                break
-            }
+            } catch { break }
 
             let newMic = audioSource.drainMicSamples()
             let newSystem = audioSource.drainSystemSamples()
@@ -111,7 +109,7 @@ final class WhisperTranscriptionService: TranscriptionService {
             if sysRMS > silenceRMSThreshold {
                 let result = await transcribeStream(
                     samples: systemAccumulated, lastConfirmedEnd: systemLastConfirmedEnd,
-                    speaker: .others, whisperKit: whisperKit
+                    speaker: .identified("1"), whisperKit: whisperKit
                 )
                 systemLastConfirmedEnd = result.updatedLastConfirmedEnd
                 confirmed.append(contentsOf: result.confirmed)
@@ -120,8 +118,10 @@ final class WhisperTranscriptionService: TranscriptionService {
 
             confirmed.sort { $0.sortKey < $1.sortKey }
 
+            let now = Date()
             for seg in confirmed {
-                writer.append(text: seg.text, speaker: seg.speaker)
+                let relativeTime = recordingStartDate.map { now.timeIntervalSince($0) } ?? 0
+                writer.append(text: seg.text, speaker: seg.speaker, relativeTime: relativeTime)
             }
             currentHypothesis = latestHypothesis
         }
