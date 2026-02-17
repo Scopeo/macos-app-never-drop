@@ -22,7 +22,7 @@ build: generate
 		-configuration Release \
 		-archivePath $(ARCHIVE_PATH) \
 		CODE_SIGN_IDENTITY="-" \
-		CODE_SIGNING_ALLOWED=NO
+		CODE_SIGNING_ALLOWED=YES
 	cp -R $(ARCHIVE_PATH)/Products/Applications/$(APP_NAME).app $(APP_PATH)
 
 # --- Package .app into a DMG ---

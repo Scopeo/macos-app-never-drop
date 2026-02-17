@@ -18,18 +18,22 @@ final class CallDetector {
     private let micMonitor: any MicrophoneMonitoring
     private var monitorTask: Task<Void, Never>?
     private var debounceTask: Task<Void, Never>?
+    private var cooldownUntil: ContinuousClock.Instant?
 
     private let activationDelay: Duration
     private let deactivationDelay: Duration
+    private let postStopCooldown: Duration
 
     init(
         micMonitor: any MicrophoneMonitoring = MicrophoneMonitor(),
         activationDelay: Duration = .seconds(3),
-        deactivationDelay: Duration = .seconds(5)
+        deactivationDelay: Duration = .seconds(5),
+        postStopCooldown: Duration = .seconds(10)
     ) {
         self.micMonitor = micMonitor
         self.activationDelay = activationDelay
         self.deactivationDelay = deactivationDelay
+        self.postStopCooldown = postStopCooldown
     }
 
     // MARK: - Public
@@ -70,6 +74,7 @@ final class CallDetector {
     func resetToIdle() {
         debounceTask?.cancel()
         debounceTask = nil
+        cooldownUntil = .now + postStopCooldown
         state = .idle
     }
 
@@ -96,6 +101,11 @@ final class CallDetector {
     private func handleMicActivated() {
         switch state {
         case .idle:
+            if let cooldownUntil, ContinuousClock.now < cooldownUntil {
+                return
+            }
+            cooldownUntil = nil
+
             let delay = activationDelay
             debounceTask = Task { [weak self] in
                 do {

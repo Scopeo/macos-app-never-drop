@@ -40,7 +40,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            probeScreenCapturePermission()
             callDetector.startMonitoring()
             await prepareTranscriptionService()
         }
@@ -168,16 +167,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Permissions
-
-    private func probeScreenCapturePermission() {
-        let tap = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
-        var tapID: AudioObjectID = kAudioObjectUnknown
-        if AudioHardwareCreateProcessTap(tap, &tapID) == noErr {
-            AudioHardwareDestroyProcessTap(tapID)
-        }
-    }
-
     // MARK: - Call lifecycle
 
     private func onCallDetected() {
@@ -210,12 +199,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let aggregateID = capture.aggregateDeviceID
-        let inputID = capture.inputDeviceID
         if aggregateID != kAudioObjectUnknown {
             callDetector.excludeDevice(aggregateID)
-        }
-        if inputID != kAudioObjectUnknown {
-            callDetector.excludeDevice(inputID)
         }
 
         do {

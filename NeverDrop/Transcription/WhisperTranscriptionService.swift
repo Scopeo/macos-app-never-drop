@@ -119,6 +119,7 @@ final class WhisperTranscriptionService: TranscriptionService {
             }
 
             confirmed.sort { $0.sortKey < $1.sortKey }
+
             for seg in confirmed {
                 writer.append(text: seg.text, speaker: seg.speaker)
             }
