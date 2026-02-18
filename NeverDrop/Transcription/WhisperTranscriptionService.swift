@@ -202,17 +202,13 @@ final class WhisperTranscriptionService: TranscriptionService {
     }
 
     private static let specialTokenPattern = try! NSRegularExpression(pattern: #"<\|[^|]*\|>"#)
-    private static let hallucination = try! NSRegularExpression(
-        pattern: #"^\s*[\[\(]?\s*(silence|pause|blank[_ ]?audio|background\s*sounds?|beep|music|applause|laughter)\s*[\]\)]?\s*$"#,
-        options: .caseInsensitive
-    )
+    private static let bracketedContent = try! NSRegularExpression(pattern: #"\[[^\]]*\]"#)
 
     private func stripSpecialTokens(_ text: String) -> String {
-        let range = NSRange(text.startIndex..., in: text)
-        let cleaned = Self.specialTokenPattern.stringByReplacingMatches(in: text, range: range, withTemplate: "")
-        let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedRange = NSRange(trimmed.startIndex..., in: trimmed)
-        if Self.hallucination.firstMatch(in: trimmed, range: trimmedRange) != nil { return "" }
-        return trimmed
+        var range = NSRange(text.startIndex..., in: text)
+        let noTokens = Self.specialTokenPattern.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+        range = NSRange(noTokens.startIndex..., in: noTokens)
+        let noBrackets = Self.bracketedContent.stringByReplacingMatches(in: noTokens, range: range, withTemplate: "")
+        return noBrackets.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

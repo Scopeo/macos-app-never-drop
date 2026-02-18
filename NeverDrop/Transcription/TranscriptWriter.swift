@@ -40,6 +40,9 @@ final class TranscriptWriter: TranscriptionWriting {
     }
 
     func close() {
+        if let handle = fileHandle, lastSpeaker != nil {
+            handle.write("\n".data(using: .utf8)!)
+        }
         do {
             try fileHandle?.close()
         } catch {
@@ -58,15 +61,17 @@ final class TranscriptWriter: TranscriptionWriting {
         var output = ""
 
         if speaker != lastSpeaker {
-            if lastSpeaker != nil { output += "\n" }
+            if lastSpeaker != nil { output += "\n\n" }
             let minutes = Int(relativeTime) / 60
             let seconds = Int(relativeTime) % 60
             let timestamp = String(format: "[%02d:%02d]", minutes, seconds)
             output += "\(timestamp) \(speaker.label(userName: userName)):\n"
             lastSpeaker = speaker
+        } else {
+            output += " "
         }
 
-        output += "\(text)\n"
+        output += text
 
         guard let data = output.data(using: .utf8) else { return }
         handle.write(data)
