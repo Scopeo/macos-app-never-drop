@@ -145,8 +145,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Never Drop"
         window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
-        window.setContentSize(NSSize(width: 900, height: 600))
-        window.minSize = NSSize(width: 700, height: 480)
+        window.setContentSize(NSSize(width: 1050, height: 700))
+        window.minSize = NSSize(width: 850, height: 550)
         window.center()
         window.isReleasedWhenClosed = false
         mainWindow = window

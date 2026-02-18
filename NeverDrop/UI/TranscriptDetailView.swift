@@ -18,9 +18,10 @@ struct TranscriptDetailView: View {
             .padding(24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .topTrailing) {
-            copyButton
-                .padding(16)
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                copyButton
+            }
         }
         .navigationTitle(file.displayName)
         .navigationSubtitle(file.customName != nil ? file.dateString : "")
@@ -57,7 +58,7 @@ struct TranscriptDetailView: View {
             HStack(spacing: 8) {
                 if let ts = segment.timestamp {
                     Text(ts)
-                        .font(.system(.subheadline, design: .monospaced))
+                        .font(.system(size: 13, design: .monospaced))
                         .foregroundStyle(.tertiary)
                 }
 
@@ -65,8 +66,8 @@ struct TranscriptDetailView: View {
             }
 
             Text(segment.text)
-                .font(.system(.body))
-                .lineSpacing(4)
+                .font(.system(size: 15))
+                .lineSpacing(5)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -80,7 +81,7 @@ struct TranscriptDetailView: View {
             renameSegmentID = segment.id
         } label: {
             Text(segment.speaker)
-                .font(.system(.subheadline, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
         }
         .buttonStyle(.plain)
