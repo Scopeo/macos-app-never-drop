@@ -1,4 +1,24 @@
 import SwiftUI
+import AppKit
+
+private struct DoubleClickDetector: NSViewRepresentable {
+    let onDoubleClick: () -> Void
+
+    func makeNSView(context: Context) -> ClickView { ClickView(onDoubleClick: onDoubleClick) }
+    func updateNSView(_ view: ClickView, context: Context) { view.onDoubleClick = onDoubleClick }
+
+    final class ClickView: NSView {
+        var onDoubleClick: () -> Void
+        init(onDoubleClick: @escaping () -> Void) {
+            self.onDoubleClick = onDoubleClick
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override func mouseDown(with event: NSEvent) {
+            if event.clickCount == 2 { onDoubleClick() } else { super.mouseDown(with: event) }
+        }
+    }
+}
 
 struct TranscriptExplorerView: View {
 
@@ -6,6 +26,7 @@ struct TranscriptExplorerView: View {
     @State private var editingFileURL: URL?
     @State private var editText = ""
     @State private var showDeleteConfirmation = false
+    @State private var showMergeConfirmation = false
     @FocusState private var isEditingFocused: Bool
 
     var body: some View {
@@ -25,6 +46,15 @@ struct TranscriptExplorerView: View {
         } message: {
             let count = store.selectedFileURLs.count
             Text("Are you sure you want to delete \(count) transcript\(count == 1 ? "" : "s")? This cannot be undone.")
+        }
+        .alert("Merge Transcripts", isPresented: $showMergeConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Merge") {
+                store.mergeFiles(urls: store.selectedFileURLs)
+            }
+        } message: {
+            let count = store.selectedFileURLs.count
+            Text("Merge \(count) transcripts into one? Timestamps will be re-aligned. The originals will be moved to Trash.")
         }
     }
 
@@ -62,7 +92,18 @@ struct TranscriptExplorerView: View {
                 .buttonStyle(.borderless)
                 .disabled(store.selectedFileURLs.isEmpty)
                 .help("Delete selected")
+
                 Spacer()
+
+                if store.selectedFileURLs.count >= 2 {
+                    let activeSelected = store.activeTranscriptURL.map { store.selectedFileURLs.contains($0) } ?? false
+                    Button("Merge") {
+                        showMergeConfirmation = true
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(activeSelected)
+                    .help(activeSelected ? "Cannot merge while a transcription is in progress" : "Merge selected transcripts into one")
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -134,7 +175,7 @@ struct TranscriptExplorerView: View {
                 Text(file.customName ?? smartDateString(file.date))
                     .font(.system(.body, weight: .medium))
                     .lineLimit(1)
-                    .onTapGesture(count: 2) { beginEditing(file) }
+                    .background(DoubleClickDetector { beginEditing(file) })
             }
 
             if file.customName != nil {
@@ -149,7 +190,7 @@ struct TranscriptExplorerView: View {
     // MARK: - Inline rename
 
     private func beginEditing(_ file: TranscriptFile) {
-        editText = file.customName ?? ""
+        editText = file.customName ?? smartDateString(file.date)
         editingFileURL = file.url
         DispatchQueue.main.async {
             isEditingFocused = true
@@ -176,7 +217,7 @@ struct TranscriptExplorerView: View {
             ContentUnavailableView(
                 "\(store.selectedFileURLs.count) Transcripts Selected",
                 systemImage: "doc.on.doc",
-                description: Text("Select a single transcript to view it, or use the toolbar to delete.")
+                description: Text("Select a single transcript to view it, or merge / delete the selection.")
             )
         } else {
             ContentUnavailableView(

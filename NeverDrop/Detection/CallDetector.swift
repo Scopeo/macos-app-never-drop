@@ -55,7 +55,10 @@ final class CallDetector {
     }
 
     func userAcceptedTranscription() {
-        guard state == .callDetected else { return }
+        guard state == .callDetected || state == .idle else { return }
+        debounceTask?.cancel()
+        debounceTask = nil
+        cooldownUntil = nil
         state = .recording
     }
 

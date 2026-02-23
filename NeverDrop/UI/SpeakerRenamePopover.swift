@@ -35,7 +35,7 @@ struct SpeakerRenamePopover: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 220)
                 .onSubmit {
-                    if hasChanges { onRename(newName) }
+                    if hasChanges { onRenameAll(newName) }
                 }
 
             HStack(spacing: 8) {

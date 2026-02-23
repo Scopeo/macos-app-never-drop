@@ -15,6 +15,7 @@ final class StatusBarController: NSObject {
 
     var onQuit: (() -> Void)?
     var onOpenTranscripts: (() -> Void)?
+    var onStartRecording: (() -> Void)?
     var onStopRecording: (() -> Void)?
     var onOpenSettings: (() -> Void)?
 
@@ -71,11 +72,19 @@ final class StatusBarController: NSObject {
 
         newMenu.addItem(NSMenuItem.separator())
 
-        if currentState == .recording {
+        switch currentState {
+        case .idle, .error:
+            let startItem = NSMenuItem(title: "Start Recording", action: #selector(startRecordingAction), keyEquivalent: "s")
+            startItem.target = self
+            newMenu.addItem(startItem)
+            newMenu.addItem(NSMenuItem.separator())
+        case .recording:
             let stopItem = NSMenuItem(title: "Stop Recording", action: #selector(stopRecordingAction), keyEquivalent: "s")
             stopItem.target = self
             newMenu.addItem(stopItem)
             newMenu.addItem(NSMenuItem.separator())
+        case .callDetected:
+            break
         }
 
         let openItem = NSMenuItem(title: "Transcripts...", action: #selector(openTranscriptsAction), keyEquivalent: "o")
@@ -96,6 +105,10 @@ final class StatusBarController: NSObject {
 
         statusItem?.menu = newMenu
         menu = newMenu
+    }
+
+    @objc private func startRecordingAction() {
+        onStartRecording?()
     }
 
     @objc private func stopRecordingAction() {

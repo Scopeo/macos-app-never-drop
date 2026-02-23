@@ -86,6 +86,19 @@ enum TranscriptParser {
         return output
     }
 
+    // MARK: - Timestamp helpers
+
+    static func parseTimestampSeconds(_ timestamp: String) -> Int? {
+        let clean = timestamp.trimmingCharacters(in: CharacterSet(charactersIn: "[] "))
+        let parts = clean.split(separator: ":")
+        guard parts.count == 2, let mm = Int(parts[0]), let ss = Int(parts[1]) else { return nil }
+        return mm * 60 + ss
+    }
+
+    static func formatTimestamp(_ totalSeconds: Int) -> String {
+        String(format: "[%02d:%02d]", totalSeconds / 60, totalSeconds % 60)
+    }
+
     // MARK: - Helpers
 
     private struct HeaderMatch {

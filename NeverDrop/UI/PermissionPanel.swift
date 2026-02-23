@@ -7,13 +7,17 @@ final class PermissionPanel {
 
     var onAccept: (() -> Void)?
     var onDecline: (() -> Void)?
+    var onContinue: (() -> Void)?
+    var previousSessionLabel: String?
 
     func show() {
         guard panel == nil else { return }
 
         let view = PermissionPanelView(
             onAccept: { [weak self] in self?.accept() },
-            onDecline: { [weak self] in self?.decline() }
+            onDecline: { [weak self] in self?.decline() },
+            onContinue: onContinue.map { handler in { [weak self] in self?.continueSession(handler: handler) } },
+            previousSessionLabel: previousSessionLabel
         )
 
         let hostingController = NSHostingController(rootView: view)
@@ -59,5 +63,10 @@ final class PermissionPanel {
     private func decline() {
         dismiss()
         onDecline?()
+    }
+
+    private func continueSession(handler: () -> Void) {
+        dismiss()
+        handler()
     }
 }

@@ -9,6 +9,7 @@ final class TranscriptStore {
 
     var files: [TranscriptFile] = []
     var selectedFileURLs: Set<URL> = []
+    var activeTranscriptURL: URL?
 
     var selectedFile: TranscriptFile? {
         guard selectedFileURLs.count == 1, let url = selectedFileURLs.first else { return nil }
@@ -77,6 +78,60 @@ final class TranscriptStore {
         saveCustomName(for: fileURL, name: files[fileIndex].customName)
     }
 
+    // MARK: - Merge
+
+    func mergeFiles(urls: Set<URL>) {
+        if let active = activeTranscriptURL, urls.contains(active) {
+            logger.warning("Merge refused: active transcript \(active.lastPathComponent) is in the selection")
+            return
+        }
+
+        let toMerge = files
+            .filter { urls.contains($0.url) }
+            .sorted { $0.date < $1.date }
+        guard toMerge.count >= 2 else { return }
+
+        let baseDate = toMerge[0].date
+        var mergedSegments: [TranscriptSegment] = []
+
+        for (i, file) in toMerge.enumerated() {
+            let offsetSeconds = Int(file.date.timeIntervalSince(baseDate))
+
+            if i > 0 {
+                let gapSeconds = Int(file.date.timeIntervalSince(toMerge[i - 1].date))
+                let gapMinutes = gapSeconds / 60
+                let gapText = gapMinutes >= 2 ? "\(gapMinutes) minutes between calls" : "\(gapSeconds) seconds between calls"
+                mergedSegments.append(TranscriptSegment(
+                    timestamp: TranscriptParser.formatTimestamp(offsetSeconds),
+                    speaker: "—",
+                    text: gapText
+                ))
+            }
+
+            let offsetSegments = file.segments.map { segment -> TranscriptSegment in
+                var s = segment
+                if let ts = segment.timestamp, let secs = TranscriptParser.parseTimestampSeconds(ts) {
+                    s.timestamp = TranscriptParser.formatTimestamp(secs + offsetSeconds)
+                }
+                return s
+            }
+            mergedSegments.append(contentsOf: offsetSegments)
+        }
+
+        let primaryURL = toMerge[0].url
+        var mergedFile = toMerge[0]
+        mergedFile.segments = mergedSegments
+        saveTranscript(mergedFile)
+
+        let trashURLs = Set(toMerge.dropFirst().map { $0.url })
+        trashFiles(urls: trashURLs)
+        files.removeAll { trashURLs.contains($0.url) }
+        if let idx = files.firstIndex(where: { $0.url == primaryURL }) {
+            files[idx] = mergedFile
+        }
+        selectedFileURLs = [primaryURL]
+    }
+
     // MARK: - Delete
 
     func deleteFiles(urls: Set<URL>) {
@@ -94,6 +149,21 @@ final class TranscriptStore {
         }
         files.removeAll { urls.contains($0.url) }
         selectedFileURLs.subtract(urls)
+    }
+
+    private func trashFiles(urls: Set<URL>) {
+        let fm = FileManager.default
+        for url in urls {
+            do {
+                try fm.trashItem(at: url, resultingItemURL: nil)
+                let meta = metaURL(for: url)
+                if fm.fileExists(atPath: meta.path) {
+                    try? fm.trashItem(at: meta, resultingItemURL: nil)
+                }
+            } catch {
+                logger.error("Failed to trash transcript \(url.lastPathComponent): \(error)")
+            }
+        }
     }
 
     // MARK: - Copy

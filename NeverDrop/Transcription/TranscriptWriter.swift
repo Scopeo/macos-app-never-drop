@@ -11,11 +11,13 @@ final class TranscriptWriter: TranscriptionWriting {
     }()
 
     var userName: String = ""
+    var currentURL: URL? { currentFileURL }
 
     private let directoryURL: URL
     private var fileHandle: FileHandle?
     private var currentFileURL: URL?
     private var lastSpeaker: Speaker?
+    private var relativeTimeOffset: TimeInterval = 0
 
     init(directoryPath: String = TranscriptWriter.transcriptsDirectoryPath) {
         self.directoryURL = URL(fileURLWithPath: directoryPath, isDirectory: true)
@@ -37,6 +39,22 @@ final class TranscriptWriter: TranscriptionWriting {
         self.fileHandle = handle
         self.currentFileURL = fileURL
         self.lastSpeaker = nil
+        self.relativeTimeOffset = 0
+    }
+
+    func openAppending(to url: URL, timeOffset: TimeInterval) throws {
+        let handle = try FileHandle(forWritingTo: url)
+        handle.seekToEndOfFile()
+
+        let ts = TranscriptParser.formatTimestamp(Int(timeOffset))
+        let separator = "\n\(ts) —:\nCall resumed\n"
+        handle.write(separator.data(using: .utf8)!)
+        handle.synchronizeFile()
+
+        self.fileHandle = handle
+        self.currentFileURL = url
+        self.lastSpeaker = nil
+        self.relativeTimeOffset = timeOffset
     }
 
     func close() {
@@ -58,12 +76,13 @@ final class TranscriptWriter: TranscriptionWriting {
     func append(text: String, speaker: Speaker, relativeTime: TimeInterval) {
         guard let handle = fileHandle else { return }
 
+        let adjustedTime = relativeTime + relativeTimeOffset
         var output = ""
 
         if speaker != lastSpeaker {
             if lastSpeaker != nil { output += "\n\n" }
-            let minutes = Int(relativeTime) / 60
-            let seconds = Int(relativeTime) % 60
+            let minutes = Int(adjustedTime) / 60
+            let seconds = Int(adjustedTime) % 60
             let timestamp = String(format: "[%02d:%02d]", minutes, seconds)
             output += "\(timestamp) \(speaker.label(userName: userName)):\n"
             lastSpeaker = speaker

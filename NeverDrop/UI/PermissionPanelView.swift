@@ -4,6 +4,8 @@ struct PermissionPanelView: View {
 
     var onAccept: () -> Void
     var onDecline: () -> Void
+    var onContinue: (() -> Void)? = nil
+    var previousSessionLabel: String? = nil
 
     @State private var secondsRemaining = 15
 
@@ -20,6 +22,7 @@ struct PermissionPanelView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 12) {
                 Button("Ignore") {
@@ -34,12 +37,19 @@ struct PermissionPanelView: View {
                 .buttonStyle(.borderedProminent)
             }
 
+            if let onContinue, let label = previousSessionLabel {
+                Button("Resume \(label) transcript") {
+                    onContinue()
+                }
+                .font(.subheadline)
+            }
+
             Text("Auto-dismiss in \(secondsRemaining)s")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
         .padding(24)
-        .frame(width: 280)
+        .frame(width: 320)
         .task {
             await autoDismissCountdown()
         }

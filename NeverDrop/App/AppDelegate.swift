@@ -26,6 +26,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindow: NSWindow?
     private var micProbeTask: Task<Void, Never>?
 
+    private struct LastSession {
+        let transcriptURL: URL
+        let startDate: Date
+        let endDate: Date
+        let displayLabel: String
+    }
+
+    private enum SessionMode {
+        case new
+        case continuing(url: URL, timeOffset: TimeInterval)
+    }
+
+    private var lastSession: LastSession?
+    private var currentSessionStartDate: Date?
+
+    private static let continueSessionWindow: TimeInterval = 30 * 60
+
     // MARK: - NSApplicationDelegate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -65,6 +82,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar.onOpenTranscripts = { [weak self] in
             self?.showMainWindow(tab: .transcripts)
         }
+        statusBar.onStartRecording = { [weak self] in
+            guard let self else { return }
+            guard transcriptionService?.isReady == true else {
+                statusBar.updateState(.error("Transcription service not ready"))
+                return
+            }
+            startRecordingSession()
+        }
         statusBar.onStopRecording = { [weak self] in
             self?.stopRecordingSession()
         }
@@ -89,6 +114,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         permissionPanel.onDecline = { [weak self] in
             self?.callDetector.userDeclinedTranscription()
             self?.statusBar.updateState(.idle)
+        }
+        permissionPanel.onContinue = { [weak self] in
+            guard let self, let session = lastSession else { return }
+            let timeOffset = Date().timeIntervalSince(session.startDate)
+            startRecordingSession(mode: .continuing(url: session.transcriptURL, timeOffset: timeOffset))
         }
     }
 
@@ -234,10 +264,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         statusBar.updateState(.callDetected)
+
+        if let session = lastSession,
+           Date().timeIntervalSince(session.endDate) < Self.continueSessionWindow {
+            permissionPanel.previousSessionLabel = session.displayLabel
+        } else {
+            permissionPanel.previousSessionLabel = nil
+        }
+
         permissionPanel.show()
     }
 
-    private func startRecordingSession() {
+    private func startRecordingSession(mode: SessionMode = .new) {
         statusBar.updateState(.recording)
 
         let capture = AudioCaptureManager()
@@ -260,7 +298,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcriptWriter.userName = settings.userName
 
         do {
-            try transcriptWriter.open()
+            switch mode {
+            case .new:
+                try transcriptWriter.open()
+                currentSessionStartDate = Date()
+            case .continuing(let url, let timeOffset):
+                try transcriptWriter.openAppending(to: url, timeOffset: timeOffset)
+            }
         } catch {
             logger.error("Transcript file failed to open: \(error)")
             stopRecordingSession()
@@ -268,6 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        transcriptStore.activeTranscriptURL = transcriptWriter.currentURL
         callDetector.userAcceptedTranscription()
 
         guard let service = transcriptionService else { return }
@@ -326,6 +371,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcriptionService?.stopTranscribing()
         audioCapture?.stopCapture()
         audioCapture = nil
+
+        if let url = transcriptWriter.currentURL, let startDate = currentSessionStartDate {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "HH:mm"
+            lastSession = LastSession(
+                transcriptURL: url,
+                startDate: startDate,
+                endDate: Date(),
+                displayLabel: fmt.string(from: startDate)
+            )
+        }
+
+        transcriptStore.activeTranscriptURL = nil
         transcriptWriter.close()
         permissionPanel.dismiss()
         callDetector.clearExclusions()
