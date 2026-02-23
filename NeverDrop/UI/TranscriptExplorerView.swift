@@ -3,9 +3,10 @@ import SwiftUI
 struct TranscriptExplorerView: View {
 
     @Bindable var store: TranscriptStore
-    @State private var renamingFileURL: URL?
-    @State private var renameText = ""
+    @State private var editingFileURL: URL?
+    @State private var editText = ""
     @State private var showDeleteConfirmation = false
+    @FocusState private var isEditingFocused: Bool
 
     var body: some View {
         NavigationSplitView {
@@ -30,44 +31,91 @@ struct TranscriptExplorerView: View {
     // MARK: - Sidebar
 
     private var sidebar: some View {
-        List(store.files, selection: $store.selectedFileURLs) { file in
-            sidebarRow(file)
-                .tag(file.url)
-                .contextMenu {
-                    Button("Rename...") {
-                        renameText = file.customName ?? ""
-                        renamingFileURL = file.url
-                    }
-                    Divider()
-                    Button("Delete", role: .destructive) {
-                        store.selectedFileURLs = [file.url]
-                        showDeleteConfirmation = true
-                    }
+        List(selection: $store.selectedFileURLs) {
+            ForEach(sidebarItems) { item in
+                switch item {
+                case .yearHeader(let year):
+                    yearHeaderView(year)
+                case .file(let file):
+                    sidebarRow(file)
+                        .tag(file.url)
+                        .contextMenu {
+                            Button("Rename...") { beginEditing(file) }
+                            Divider()
+                            Button("Delete", role: .destructive) {
+                                store.selectedFileURLs = [file.url]
+                                showDeleteConfirmation = true
+                            }
+                        }
                 }
+            }
         }
         .listStyle(.sidebar)
         .frame(minWidth: 220)
-        .toolbar {
-            ToolbarItemGroup(placement: .automatic) {
-                Button {
-                    store.loadFiles()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help("Refresh")
-
+        .safeAreaInset(edge: .bottom) {
+            HStack {
                 Button(role: .destructive) {
                     showDeleteConfirmation = true
                 } label: {
                     Image(systemName: "trash")
                 }
-                .help("Delete selected")
+                .buttonStyle(.borderless)
                 .disabled(store.selectedFileURLs.isEmpty)
+                .help("Delete selected")
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.bar)
+        }
+    }
+
+    // MARK: - Sidebar items (flat list with optional year headers)
+
+    private enum SidebarItem: Identifiable {
+        case yearHeader(Int)
+        case file(TranscriptFile)
+
+        var id: String {
+            switch self {
+            case .yearHeader(let year): return "year-\(year)"
+            case .file(let f): return f.url.absoluteString
             }
         }
-        .sheet(isPresented: isRenamingPresented) {
-            renameSheet
+    }
+
+    private var sidebarItems: [SidebarItem] {
+        let calendar = Calendar.current
+        let years = Set(store.files.map { calendar.component(.year, from: $0.date) })
+        let showYearHeaders = years.count > 1
+
+        var items: [SidebarItem] = []
+        var currentYear: Int?
+
+        for file in store.files {
+            let year = calendar.component(.year, from: file.date)
+            if showYearHeaders && year != currentYear {
+                items.append(.yearHeader(year))
+                currentYear = year
+            }
+            items.append(.file(file))
         }
+        return items
+    }
+
+    // MARK: - Year header
+
+    private func yearHeaderView(_ year: Int) -> some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(.quaternary).frame(height: 1)
+            Text(String(year))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.tertiary)
+            Rectangle().fill(.quaternary).frame(height: 1)
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 4)
+        .allowsHitTesting(false)
     }
 
     // MARK: - Sidebar row
@@ -75,55 +123,47 @@ struct TranscriptExplorerView: View {
     @ViewBuilder
     private func sidebarRow(_ file: TranscriptFile) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(file.displayName)
-                .font(.system(.body, weight: .medium))
-                .lineLimit(1)
-            Text(file.customName != nil ? file.dateString : relativeDateString(file.date))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            if editingFileURL == file.url {
+                TextField("Conversation name", text: $editText)
+                    .textFieldStyle(.plain)
+                    .font(.system(.body, weight: .medium))
+                    .focused($isEditingFocused)
+                    .onSubmit { commitRename() }
+                    .onExitCommand { cancelEditing() }
+            } else {
+                Text(file.customName ?? smartDateString(file.date))
+                    .font(.system(.body, weight: .medium))
+                    .lineLimit(1)
+                    .onTapGesture(count: 2) { beginEditing(file) }
+            }
+
+            if file.customName != nil {
+                Text(smartDateString(file.date))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.vertical, 4)
     }
 
-    // MARK: - Rename sheet
+    // MARK: - Inline rename
 
-    private var isRenamingPresented: Binding<Bool> {
-        Binding(
-            get: { renamingFileURL != nil },
-            set: { if !$0 { renamingFileURL = nil } }
-        )
-    }
-
-    private var renameSheet: some View {
-        VStack(spacing: 16) {
-            Text("Rename Conversation")
-                .font(.headline)
-
-            TextField("Conversation name", text: $renameText)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 280)
-                .onSubmit { commitRename() }
-
-            Text("Leave empty to use the date as name.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            HStack {
-                Button("Cancel") { renamingFileURL = nil }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("Save") { commitRename() }
-                    .keyboardShortcut(.defaultAction)
-            }
+    private func beginEditing(_ file: TranscriptFile) {
+        editText = file.customName ?? ""
+        editingFileURL = file.url
+        DispatchQueue.main.async {
+            isEditingFocused = true
         }
-        .padding(24)
-        .frame(width: 340)
     }
 
     private func commitRename() {
-        guard let url = renamingFileURL else { return }
-        store.renameConversation(fileURL: url, newName: renameText)
-        renamingFileURL = nil
+        guard let url = editingFileURL else { return }
+        store.renameConversation(fileURL: url, newName: editText)
+        editingFileURL = nil
+    }
+
+    private func cancelEditing() {
+        editingFileURL = nil
     }
 
     // MARK: - Detail
@@ -147,11 +187,25 @@ struct TranscriptExplorerView: View {
         }
     }
 
-    // MARK: - Helpers
+    // MARK: - Smart date formatting
 
-    private func relativeDateString(_ date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
+    private func smartDateString(_ date: Date) -> String {
+        let calendar = Calendar.current
+
+        if calendar.isDateInToday(date) {
+            let tf = DateFormatter()
+            tf.dateFormat = "HH:mm"
+            return "Today, \(tf.string(from: date))"
+        }
+
+        if calendar.isDateInYesterday(date) {
+            let tf = DateFormatter()
+            tf.dateFormat = "HH:mm"
+            return "Yesterday, \(tf.string(from: date))"
+        }
+
+        let df = DateFormatter()
+        df.dateFormat = "EEEE d MMM"
+        return df.string(from: date)
     }
 }

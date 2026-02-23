@@ -28,6 +28,7 @@ struct SettingsView: View {
                         Text(provider.displayName).tag(provider)
                     }
                 }
+                .pickerStyle(.menu)
 
                 if settings.transcriptionProvider == .sonioxCloud {
                     SecureField("Soniox API Key", text: $settings.sonioxAPIKey)
@@ -42,6 +43,7 @@ struct SettingsView: View {
                         Text(option.label).tag(option.code as String?)
                     }
                 }
+                .pickerStyle(.menu)
             }
 
             Section("General") {
@@ -49,7 +51,6 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 400)
     }
 
     private var languageBinding: Binding<String?> {

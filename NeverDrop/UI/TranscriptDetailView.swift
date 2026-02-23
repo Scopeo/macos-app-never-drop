@@ -7,24 +7,46 @@ struct TranscriptDetailView: View {
 
     @State private var renameSegmentID: UUID?
     @State private var showCopiedFeedback = false
+    @ScaledMetric(relativeTo: .body) private var bodySize: CGFloat = 15
+    @ScaledMetric(relativeTo: .subheadline) private var metaSize: CGFloat = 13
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
-                ForEach(file.segments) { segment in
-                    segmentRow(segment)
-                }
-            }
-            .padding(24)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                refreshButton
                 copyButton
             }
+            .padding(.horizontal, 24)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 20) {
+                    ForEach(file.segments) { segment in
+                        segmentRow(segment)
+                    }
+                }
+                .padding(24)
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle(file.displayName)
         .navigationSubtitle(file.customName != nil ? file.dateString : "")
+    }
+
+    // MARK: - Refresh button
+
+    private var refreshButton: some View {
+        Button {
+            store.loadFiles()
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.callout)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Refresh transcripts")
     }
 
     // MARK: - Copy button
@@ -58,7 +80,7 @@ struct TranscriptDetailView: View {
             HStack(spacing: 8) {
                 if let ts = segment.timestamp {
                     Text(ts)
-                        .font(.system(size: 13, design: .monospaced))
+                        .font(.system(size: metaSize, design: .monospaced))
                         .foregroundStyle(.tertiary)
                 }
 
@@ -66,7 +88,7 @@ struct TranscriptDetailView: View {
             }
 
             Text(segment.text)
-                .font(.system(size: 15))
+                .font(.system(size: bodySize))
                 .lineSpacing(5)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -81,7 +103,7 @@ struct TranscriptDetailView: View {
             renameSegmentID = segment.id
         } label: {
             Text(segment.speaker)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: metaSize, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
         }
         .buttonStyle(.plain)

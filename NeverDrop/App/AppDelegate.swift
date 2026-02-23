@@ -130,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let existing = mainWindow {
             if tab == .transcripts { transcriptStore.loadFiles() }
             existing.makeKeyAndOrderFront(nil)
+            NSApplication.shared.setActivationPolicy(.regular)
             NSApp.activate()
             return
         }
@@ -145,14 +146,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Never Drop"
         window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
-        window.setContentSize(NSSize(width: 1050, height: 700))
-        window.minSize = NSSize(width: 850, height: 550)
+        window.setContentSize(NSSize(width: 1150, height: 750))
+        window.minSize = NSSize(width: 900, height: 600)
         window.center()
         window.isReleasedWhenClosed = false
         mainWindow = window
 
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(mainWindowDidClose(_:)),
+            name: NSWindow.willCloseNotification,
+            object: window
+        )
+
+        NSApplication.shared.setActivationPolicy(.regular)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate()
+    }
+
+    @objc private func mainWindowDidClose(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.accessory)
     }
 
     // MARK: - Transcription service management

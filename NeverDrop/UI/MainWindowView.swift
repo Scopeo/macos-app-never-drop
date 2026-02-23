@@ -30,6 +30,6 @@ struct MainWindowView: View {
                 }
                 .tag(MainWindowTab.settings)
         }
-        .frame(minWidth: 850, minHeight: 550)
+        .frame(minWidth: 900, minHeight: 600)
     }
 }
