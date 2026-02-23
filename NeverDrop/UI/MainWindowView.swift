@@ -17,18 +17,26 @@ struct MainWindowView: View {
     @Bindable var settings: AppSettings
 
     var body: some View {
-        TabView(selection: $state.selectedTab) {
-            TranscriptExplorerView(store: store)
-                .tabItem {
+        Group {
+            switch state.selectedTab {
+            case .transcripts:
+                TranscriptExplorerView(store: store)
+            case .settings:
+                SettingsView(settings: settings)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("Tab", selection: $state.selectedTab) {
                     Label("Transcripts", systemImage: "doc.text")
-                }
-                .tag(MainWindowTab.transcripts)
-
-            SettingsView(settings: settings)
-                .tabItem {
+                        .tag(MainWindowTab.transcripts)
                     Label("Settings", systemImage: "gear")
+                        .tag(MainWindowTab.settings)
                 }
-                .tag(MainWindowTab.settings)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
         }
         .frame(minWidth: 900, minHeight: 600)
     }

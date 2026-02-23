@@ -15,7 +15,11 @@ private struct DoubleClickDetector: NSViewRepresentable {
         }
         required init?(coder: NSCoder) { fatalError() }
         override func mouseDown(with event: NSEvent) {
-            if event.clickCount == 2 { onDoubleClick() } else { super.mouseDown(with: event) }
+            if event.clickCount == 2 { onDoubleClick() }
+            nextResponder?.mouseDown(with: event)
+        }
+        override func rightMouseDown(with event: NSEvent) {
+            nextResponder?.rightMouseDown(with: event)
         }
     }
 }
@@ -175,7 +179,7 @@ struct TranscriptExplorerView: View {
                 Text(file.customName ?? smartDateString(file.date))
                     .font(.system(.body, weight: .medium))
                     .lineLimit(1)
-                    .background(DoubleClickDetector { beginEditing(file) })
+                    .overlay(DoubleClickDetector { beginEditing(file) })
             }
 
             if file.customName != nil {

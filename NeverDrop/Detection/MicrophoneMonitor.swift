@@ -69,25 +69,34 @@ final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
     private func setupDeviceListListener() {
         var address = Self.devicesAddress
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.refreshDevices()
-            self?.checkAndEmit()
+            self?.handleDeviceListChange()
         }
         deviceListListenerBlock = block
         AudioObjectAddPropertyListenerBlock(Self.systemObject, &address, queue, block)
     }
 
+    private func handleDeviceListChange() {
+        let (_, removed) = refreshDevices()
+        if removed {
+            checkAndEmit()
+        } else {
+            checkAndEmitActivationOnly()
+        }
+    }
+
     // MARK: - Per-device running listener
 
-    private func refreshDevices() {
+    @discardableResult
+    private func refreshDevices() -> (added: Bool, removed: Bool) {
         let currentInputIDs = Set(Self.allInputDeviceIDs())
+        let removedIDs = trackedDevices.subtracting(currentInputIDs)
+        let addedIDs = currentInputIDs.subtracting(trackedDevices)
 
-        for id in trackedDevices.subtracting(currentInputIDs) {
-            removeRunningListener(for: id)
-        }
-        for id in currentInputIDs.subtracting(trackedDevices) {
-            addRunningListener(for: id)
-        }
+        for id in removedIDs { removeRunningListener(for: id) }
+        for id in addedIDs { addRunningListener(for: id) }
         trackedDevices = currentInputIDs
+
+        return (added: !addedIDs.isEmpty, removed: !removedIDs.isEmpty)
     }
 
     private func addRunningListener(for deviceID: AudioDeviceID) {
@@ -109,14 +118,24 @@ final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
     // MARK: - Status check
 
     private func checkAndEmit() {
-        let candidates = trackedDevices.subtracting(excludedDeviceIDs)
-        let current = candidates.contains {
-            Self.isDeviceRunning($0) && !Self.isDeviceRunningLocally($0)
-        }
-
+        let current = evaluateStatus()
         if lastStatus != current {
             lastStatus = current
             continuation?.yield(current)
+        }
+    }
+
+    private func checkAndEmitActivationOnly() {
+        let current = evaluateStatus()
+        guard current, lastStatus != current else { return }
+        lastStatus = current
+        continuation?.yield(current)
+    }
+
+    private func evaluateStatus() -> Bool {
+        let candidates = trackedDevices.subtracting(excludedDeviceIDs)
+        return candidates.contains {
+            Self.isDeviceRunning($0) && !Self.isDeviceRunningLocally($0)
         }
     }
 

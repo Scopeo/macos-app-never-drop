@@ -13,18 +13,28 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
     private var ioProcID: AudioDeviceIOProcID?
     private var tapUUID = UUID()
 
+    private var micEngine: AVAudioEngine?
     private var systemConverter: AVAudioConverter?
     private var micConverter: AVAudioConverter?
     private var monoSourceFormat: AVAudioFormat?
     private var sourceSampleRate: Double = 48_000
-    private var tapChannelCount: Int = 2
+    private var currentOutputUID: String?
 
     private let lock = NSLock()
     private var systemSampleBuffer: [Float] = []
     private var micSampleBuffer: [Float] = []
 
     private let captureQueue = DispatchQueue(label: "com.draftnrun.NeverDrop.AudioCapture", qos: .userInteractive)
+    private let deviceListenerQueue = DispatchQueue(label: "com.draftnrun.NeverDrop.DeviceListener")
+    private let restartQueue = DispatchQueue(label: "com.draftnrun.NeverDrop.DeviceRestart")
+    private var inputListenerBlock: AudioObjectPropertyListenerBlock?
+    private var outputListenerBlock: AudioObjectPropertyListenerBlock?
+    private var pendingRestartWork: DispatchWorkItem?
+    private var engineConfigObserver: NSObjectProtocol?
     private(set) var isCapturing = false
+
+    var onInputDeviceChanged: ((_ newDeviceID: AudioDeviceID) -> Void)?
+    var onAggregateDeviceChanged: ((_ newAggregateID: AudioObjectID) -> Void)?
 
     static let targetSampleRate: Double = 16_000
     static let targetFormat = AVAudioFormat(
@@ -45,6 +55,8 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
     func startCapture() throws {
         guard !isCapturing else { return }
 
+        // --- System audio: aggregate device with process tap (no mic) ---
+
         let tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
         tapUUID = UUID()
         tapDesc.uuid = tapUUID
@@ -58,28 +70,19 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
         tapID = newTapID
 
         let outputUID = try readDefaultDeviceUID(scope: kAudioHardwarePropertyDefaultOutputDevice)
-        let inputUID = try readDefaultDeviceUID(scope: kAudioHardwarePropertyDefaultInputDevice)
-        inputDeviceID = try deviceIDForUID(inputUID)
-
-        let outputRate = try readDeviceSampleRate(uid: outputUID)
-        let inputRate = try readDeviceSampleRate(uid: inputUID)
-        let clockSourceUID = inputRate <= outputRate ? inputUID : outputUID
+        currentOutputUID = outputUID
 
         let aggDesc: [String: Any] = [
             kAudioAggregateDeviceNameKey: "NeverDrop-Capture",
             kAudioAggregateDeviceUIDKey: UUID().uuidString,
-            kAudioAggregateDeviceMainSubDeviceKey: clockSourceUID,
+            kAudioAggregateDeviceMainSubDeviceKey: outputUID,
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
             kAudioAggregateDeviceTapAutoStartKey: true,
             kAudioAggregateDeviceSubDeviceListKey: [
                 [
-                    kAudioSubDeviceUIDKey: inputUID,
-                    kAudioSubDeviceDriftCompensationKey: false,
-                ],
-                [
                     kAudioSubDeviceUIDKey: outputUID,
-                    kAudioSubDeviceDriftCompensationKey: true,
+                    kAudioSubDeviceDriftCompensationKey: false,
                 ],
             ],
             kAudioAggregateDeviceTapListKey: [
@@ -108,7 +111,6 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
         let tapFmtErr = AudioObjectGetPropertyData(tapID, &tapAddress, 0, nil, &tapDataSize, &tapStreamDesc)
         if tapFmtErr == noErr {
             sourceSampleRate = tapStreamDesc.mSampleRate
-            tapChannelCount = Int(tapStreamDesc.mChannelsPerFrame)
         }
 
         let sourceFormat = AVAudioFormat(
@@ -120,8 +122,7 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
         monoSourceFormat = sourceFormat
 
         systemConverter = AVAudioConverter(from: sourceFormat, to: Self.targetFormat)
-        micConverter = AVAudioConverter(from: sourceFormat, to: Self.targetFormat)
-        if systemConverter == nil || micConverter == nil {
+        guard systemConverter != nil else {
             cleanup()
             throw AudioCaptureError.converterCreationFailed
         }
@@ -146,7 +147,273 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
             throw AudioCaptureError.failedToStart(startErr)
         }
 
+        // --- Mic audio: AVAudioEngine on default input ---
+
+        do {
+            try startMicEngine()
+        } catch {
+            cleanup()
+            throw error
+        }
+
+        installDeviceChangeListeners()
         isCapturing = true
+    }
+
+    private func startMicEngine() throws {
+        let engine = AVAudioEngine()
+        micEngine = engine
+
+        let inputNode = engine.inputNode
+        let hwFormat = inputNode.inputFormat(forBus: 0)
+
+        guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
+            throw AudioCaptureError.cannotReadDevice(kAudioHardwareBadDeviceError)
+        }
+
+        let micSourceFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: hwFormat.sampleRate,
+            channels: 1,
+            interleaved: false
+        )!
+        guard let converter = AVAudioConverter(from: micSourceFormat, to: Self.targetFormat) else {
+            throw AudioCaptureError.converterCreationFailed
+        }
+        micConverter = converter
+
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, _ in
+            self?.handleMicBuffer(buffer)
+        }
+
+        engine.prepare()
+        try engine.start()
+
+        engineConfigObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.restartQueue.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
+                guard let self, self.isCapturing else { return }
+                if !(self.micEngine?.isRunning ?? false) {
+                    self.restartMicEngine()
+                }
+            }
+        }
+
+        inputDeviceID = try readDefaultDeviceID(scope: kAudioHardwarePropertyDefaultInputDevice)
+    }
+
+    // MARK: - Device change listeners
+
+    private func installDeviceChangeListeners() {
+        let systemObj = AudioObjectID(kAudioObjectSystemObject)
+
+        var inputAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let inBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.handleInputDeviceChanged()
+        }
+        inputListenerBlock = inBlock
+        AudioObjectAddPropertyListenerBlock(systemObj, &inputAddr, deviceListenerQueue, inBlock)
+
+        var outputAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let outBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.handleOutputDeviceChanged()
+        }
+        outputListenerBlock = outBlock
+        AudioObjectAddPropertyListenerBlock(systemObj, &outputAddr, deviceListenerQueue, outBlock)
+    }
+
+    private func removeDeviceChangeListeners() {
+        let systemObj = AudioObjectID(kAudioObjectSystemObject)
+        if let block = inputListenerBlock {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(systemObj, &addr, deviceListenerQueue, block)
+            inputListenerBlock = nil
+        }
+        if let block = outputListenerBlock {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(systemObj, &addr, deviceListenerQueue, block)
+            outputListenerBlock = nil
+        }
+    }
+
+    private func handleInputDeviceChanged() {
+        scheduleRestart(reason: "input")
+    }
+
+    private func handleOutputDeviceChanged() {
+        scheduleRestart(reason: "output")
+    }
+
+    private func scheduleRestart(reason: String) {
+        pendingRestartWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.performDebouncedRestart(reason: reason)
+        }
+        pendingRestartWork = work
+        restartQueue.asyncAfter(deadline: .now() + .milliseconds(500), execute: work)
+    }
+
+    private func performDebouncedRestart(reason: String) {
+        guard isCapturing else { return }
+
+        let newInputID = (try? readDefaultDeviceID(scope: kAudioHardwarePropertyDefaultInputDevice)) ?? kAudioObjectUnknown
+        let inputChanged = newInputID != kAudioObjectUnknown && newInputID != inputDeviceID
+
+        let newOutputUID = try? readDefaultDeviceUID(scope: kAudioHardwarePropertyDefaultOutputDevice)
+        let outputChanged = newOutputUID != nil && newOutputUID != currentOutputUID
+
+        if inputChanged {
+            restartMicEngine()
+            onInputDeviceChanged?(inputDeviceID)
+        }
+
+        if outputChanged {
+            restartSystemCapture()
+            onAggregateDeviceChanged?(aggregateDeviceID)
+        }
+    }
+
+    private func restartMicEngine(retryCount: Int = 0) {
+        if let obs = engineConfigObserver {
+            NotificationCenter.default.removeObserver(obs)
+            engineConfigObserver = nil
+        }
+        micEngine?.inputNode.removeTap(onBus: 0)
+        micEngine?.stop()
+        micEngine = nil
+        micConverter = nil
+
+        do {
+            try startMicEngine()
+        } catch {
+            logger.error("Failed to restart mic engine after device change: \(error)")
+            if retryCount < 3 {
+                let nextRetry = retryCount + 1
+                let delayMs = 500 * nextRetry
+                restartQueue.asyncAfter(deadline: .now() + .milliseconds(delayMs)) { [weak self] in
+                    guard let self, self.isCapturing else { return }
+                    self.restartMicEngine(retryCount: nextRetry)
+                }
+            }
+        }
+    }
+
+    private func restartSystemCapture() {
+        if let procID = ioProcID {
+            AudioDeviceStop(aggregateDeviceID, procID)
+            AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
+            ioProcID = nil
+        }
+        if aggregateDeviceID != kAudioObjectUnknown {
+            AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
+            aggregateDeviceID = kAudioObjectUnknown
+        }
+        if tapID != kAudioObjectUnknown {
+            AudioHardwareDestroyProcessTap(tapID)
+            tapID = kAudioObjectUnknown
+        }
+        systemConverter = nil
+        monoSourceFormat = nil
+
+        do {
+            let tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+            tapUUID = UUID()
+            tapDesc.uuid = tapUUID
+            tapDesc.muteBehavior = .unmuted
+
+            var newTapID: AudioObjectID = kAudioObjectUnknown
+            let tapErr = AudioHardwareCreateProcessTap(tapDesc, &newTapID)
+            guard tapErr == noErr else { return }
+            tapID = newTapID
+
+            let outputUID = try readDefaultDeviceUID(scope: kAudioHardwarePropertyDefaultOutputDevice)
+            currentOutputUID = outputUID
+
+            let aggDesc: [String: Any] = [
+                kAudioAggregateDeviceNameKey: "NeverDrop-Capture",
+                kAudioAggregateDeviceUIDKey: UUID().uuidString,
+                kAudioAggregateDeviceMainSubDeviceKey: outputUID,
+                kAudioAggregateDeviceIsPrivateKey: true,
+                kAudioAggregateDeviceIsStackedKey: false,
+                kAudioAggregateDeviceTapAutoStartKey: true,
+                kAudioAggregateDeviceSubDeviceListKey: [
+                    [
+                        kAudioSubDeviceUIDKey: outputUID,
+                        kAudioSubDeviceDriftCompensationKey: false,
+                    ],
+                ],
+                kAudioAggregateDeviceTapListKey: [
+                    [
+                        kAudioSubTapUIDKey: tapUUID.uuidString,
+                        kAudioSubTapDriftCompensationKey: true,
+                    ],
+                ],
+            ]
+
+            var newAggID: AudioObjectID = kAudioObjectUnknown
+            let aggErr = AudioHardwareCreateAggregateDevice(aggDesc as CFDictionary, &newAggID)
+            guard aggErr == noErr else {
+                AudioHardwareDestroyProcessTap(tapID)
+                tapID = kAudioObjectUnknown
+                return
+            }
+            aggregateDeviceID = newAggID
+
+            var tapAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioTapPropertyFormat,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var tapStreamDesc = AudioStreamBasicDescription()
+            var tapDataSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            let tapFmtErr = AudioObjectGetPropertyData(tapID, &tapAddress, 0, nil, &tapDataSize, &tapStreamDesc)
+            if tapFmtErr == noErr {
+                sourceSampleRate = tapStreamDesc.mSampleRate
+            }
+
+            let sourceFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: sourceSampleRate,
+                channels: 1,
+                interleaved: false
+            )!
+            monoSourceFormat = sourceFormat
+            systemConverter = AVAudioConverter(from: sourceFormat, to: Self.targetFormat)
+
+            var procID: AudioDeviceIOProcID?
+            let ioErr = AudioDeviceCreateIOProcIDWithBlock(
+                &procID,
+                aggregateDeviceID,
+                captureQueue
+            ) { [weak self] _, inInputData, _, _, _ in
+                self?.handleAudioBuffer(inInputData)
+            }
+            guard ioErr == noErr, let procID else { return }
+            ioProcID = procID
+            AudioDeviceStart(aggregateDeviceID, procID)
+        } catch {
+            logger.error("Failed to restart system capture after output device change: \(error)")
+        }
     }
 
     func stopCapture() {
@@ -171,10 +438,10 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
         return samples
     }
 
-    // MARK: - IO Callback
+    // MARK: - IO Callback (system audio only)
 
     private func handleAudioBuffer(_ inputData: UnsafePointer<AudioBufferList>) {
-        guard let systemConverter, let micConverter, let monoSourceFormat else { return }
+        guard let systemConverter, let monoSourceFormat else { return }
 
         let ablPtr = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
         let bufCount = ablPtr.count
@@ -185,38 +452,46 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
         let firstBufFrames = Int(firstBuf.mDataByteSize) / (bytesPerSample * Int(max(firstBuf.mNumberChannels, 1)))
         guard firstBufFrames > 0 else { return }
 
-        var tapStart = bufCount
-        var tapChannelsFound = 0
-        for i in stride(from: bufCount - 1, through: 0, by: -1) {
-            tapChannelsFound += Int(max(ablPtr[i].mNumberChannels, 1))
-            tapStart = i
-            if tapChannelsFound >= tapChannelCount { break }
-        }
-        let micRange = 0..<tapStart
-        let systemRange = tapStart..<bufCount
-
-        if !systemRange.isEmpty {
-            let systemMono = downmixToMono(ablPtr, range: systemRange, frameCount: firstBufFrames)
-            if let resampled = resample(systemMono, using: systemConverter, sourceFormat: monoSourceFormat) {
-                lock.lock()
-                systemSampleBuffer.append(contentsOf: resampled)
-                if systemSampleBuffer.count > Self.maxBufferSamples {
-                    systemSampleBuffer.removeFirst(systemSampleBuffer.count - Self.maxBufferSamples)
-                }
-                lock.unlock()
+        let systemMono = downmixToMono(ablPtr, range: 0..<bufCount, frameCount: firstBufFrames)
+        if let resampled = resample(systemMono, using: systemConverter, sourceFormat: monoSourceFormat) {
+            lock.lock()
+            systemSampleBuffer.append(contentsOf: resampled)
+            if systemSampleBuffer.count > Self.maxBufferSamples {
+                systemSampleBuffer.removeFirst(systemSampleBuffer.count - Self.maxBufferSamples)
             }
+            lock.unlock()
+        }
+    }
+
+    // MARK: - Mic callback (AVAudioEngine tap)
+
+    private func handleMicBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard let micConverter, let channelData = buffer.floatChannelData else { return }
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0 else { return }
+
+        let channels = Int(buffer.format.channelCount)
+        var mono: [Float]
+
+        if channels == 1 {
+            mono = Array(UnsafeBufferPointer(start: channelData[0], count: frameCount))
+        } else {
+            mono = [Float](repeating: 0, count: frameCount)
+            for ch in 0..<channels {
+                let ptr = channelData[ch]
+                for f in 0..<frameCount { mono[f] += ptr[f] }
+            }
+            let scale = 1.0 / Float(channels)
+            for f in 0..<frameCount { mono[f] *= scale }
         }
 
-        if !micRange.isEmpty {
-            let micMono = downmixToMono(ablPtr, range: micRange, frameCount: firstBufFrames)
-            if let resampled = resample(micMono, using: micConverter, sourceFormat: monoSourceFormat) {
-                lock.lock()
-                micSampleBuffer.append(contentsOf: resampled)
-                if micSampleBuffer.count > Self.maxBufferSamples {
-                    micSampleBuffer.removeFirst(micSampleBuffer.count - Self.maxBufferSamples)
-                }
-                lock.unlock()
+        if let resampled = resample(mono, using: micConverter, sourceFormat: micConverter.inputFormat) {
+            lock.lock()
+            micSampleBuffer.append(contentsOf: resampled)
+            if micSampleBuffer.count > Self.maxBufferSamples {
+                micSampleBuffer.removeFirst(micSampleBuffer.count - Self.maxBufferSamples)
             }
+            lock.unlock()
         }
     }
 
@@ -302,6 +577,23 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
     // MARK: - Cleanup
 
     private func cleanup() {
+        removeDeviceChangeListeners()
+
+        restartQueue.sync {
+            self.pendingRestartWork?.cancel()
+            self.pendingRestartWork = nil
+        }
+
+        if let obs = engineConfigObserver {
+            NotificationCenter.default.removeObserver(obs)
+            engineConfigObserver = nil
+        }
+        micEngine?.inputNode.removeTap(onBus: 0)
+        micEngine?.stop()
+        micEngine = nil
+        micConverter = nil
+        inputDeviceID = kAudioObjectUnknown
+
         if let procID = ioProcID {
             AudioDeviceStop(aggregateDeviceID, procID)
             AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
@@ -316,13 +608,13 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
             tapID = kAudioObjectUnknown
         }
         systemConverter = nil
-        micConverter = nil
         monoSourceFormat = nil
+        currentOutputUID = nil
     }
 
     // MARK: - CoreAudio helpers
 
-    private func readDefaultDeviceUID(scope: AudioObjectPropertySelector) throws -> String {
+    private func readDefaultDeviceID(scope: AudioObjectPropertySelector) throws -> AudioDeviceID {
         var address = AudioObjectPropertyAddress(
             mSelector: scope,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -334,32 +626,12 @@ final class AudioCaptureManager: AudioSource, @unchecked Sendable {
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize, &deviceID
         )
         guard err == noErr else { throw AudioCaptureError.cannotReadDevice(err) }
+        return deviceID
+    }
 
+    private func readDefaultDeviceUID(scope: AudioObjectPropertySelector) throws -> String {
+        let deviceID = try readDefaultDeviceID(scope: scope)
         return try readDeviceUIDString(deviceID)
-    }
-
-    private func readDeviceSampleRate(uid: String) throws -> Double {
-        let deviceID = try deviceIDForUID(uid)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyNominalSampleRate,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var sampleRate: Float64 = 0
-        var dataSize = UInt32(MemoryLayout<Float64>.size)
-        let err = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &sampleRate)
-        guard err == noErr else { throw AudioCaptureError.cannotReadDevice(err) }
-        return sampleRate
-    }
-
-    private func deviceIDForUID(_ targetUID: String) throws -> AudioDeviceID {
-        let allDevices = MicrophoneMonitor.allDeviceIDs()
-        for deviceID in allDevices {
-            if let uid = try? readDeviceUIDString(deviceID), uid == targetUID {
-                return deviceID
-            }
-        }
-        throw AudioCaptureError.cannotReadDevice(kAudioHardwareBadDeviceError)
     }
 
     private func readDeviceUIDString(_ deviceID: AudioDeviceID) throws -> String {
