@@ -42,6 +42,11 @@ final class AppSettings {
         didSet { defaults.set(userName, forKey: Keys.userName) }
     }
 
+    /// nil = follow system default input; otherwise a specific device UID
+    var micDeviceUID: String? {
+        didSet { defaults.set(micDeviceUID, forKey: Keys.micDeviceUID) }
+    }
+
     var isLaunchAtLoginEnabled: Bool {
         get { SMAppService.mainApp.status == .enabled }
         set {
@@ -70,6 +75,7 @@ final class AppSettings {
         static let openaiAPIKey = "openai_api_key"
         static let language = "selected_language"
         static let userName = "user_name"
+        static let micDeviceUID = "mic_device_uid"
     }
 
     init() {
@@ -79,5 +85,6 @@ final class AppSettings {
         self.openaiAPIKey = defaults.string(forKey: Keys.openaiAPIKey) ?? ""
         self.selectedLanguage = defaults.string(forKey: Keys.language)
         self.userName = defaults.string(forKey: Keys.userName) ?? ""
+        self.micDeviceUID = defaults.string(forKey: Keys.micDeviceUID)
     }
 }

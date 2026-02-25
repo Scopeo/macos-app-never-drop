@@ -15,11 +15,14 @@ private struct DoubleClickDetector: NSViewRepresentable {
         }
         required init?(coder: NSCoder) { fatalError() }
         override func mouseDown(with event: NSEvent) {
-            if event.clickCount == 2 { onDoubleClick() }
-            nextResponder?.mouseDown(with: event)
+            if event.clickCount == 2 {
+                onDoubleClick()
+            } else {
+                nextResponder?.mouseDown(with: event)
+            }
         }
         override func rightMouseDown(with event: NSEvent) {
-            nextResponder?.rightMouseDown(with: event)
+            super.rightMouseDown(with: event)
         }
     }
 }

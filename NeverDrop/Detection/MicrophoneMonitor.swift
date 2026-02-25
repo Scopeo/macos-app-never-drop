@@ -4,7 +4,6 @@ import Foundation
 final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
 
     private var trackedDevices = Set<AudioDeviceID>()
-    private var excludedDeviceIDs = Set<AudioDeviceID>()
     private var listenerBlocks = [AudioDeviceID: AudioObjectPropertyListenerBlock]()
     private var deviceListListenerBlock: AudioObjectPropertyListenerBlock?
     private var continuation: AsyncStream<Bool>.Continuation?
@@ -31,14 +30,6 @@ final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
                 self?.queue.async { self?.stopMonitoring() }
             }
         }
-    }
-
-    func excludeDevice(_ deviceID: AudioDeviceID) {
-        queue.sync { excludedDeviceIDs.insert(deviceID) }
-    }
-
-    func clearExclusions() {
-        queue.sync { excludedDeviceIDs.removeAll() }
     }
 
     // MARK: - Monitoring lifecycle
@@ -133,8 +124,7 @@ final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
     }
 
     private func evaluateStatus() -> Bool {
-        let candidates = trackedDevices.subtracting(excludedDeviceIDs)
-        return candidates.contains {
+        trackedDevices.contains {
             Self.isDeviceRunning($0) && !Self.isDeviceRunningLocally($0)
         }
     }

@@ -1,8 +1,10 @@
+import CoreAudio
 import SwiftUI
 
 struct SettingsView: View {
 
     @Bindable var settings: AppSettings
+    @State private var inputDevices: [(uid: String, name: String)] = []
 
     private static let languages: [(code: String?, label: String)] = [
         (nil, "Auto-detect"),
@@ -20,6 +22,16 @@ struct SettingsView: View {
         Form {
             Section("Identity") {
                 TextField("Your Name", text: $settings.userName)
+            }
+
+            Section("Audio") {
+                Picker("Microphone", selection: micDeviceBinding) {
+                    Text("System Default").tag(nil as String?)
+                    ForEach(inputDevices, id: \.uid) { device in
+                        Text(device.name).tag(device.uid as String?)
+                    }
+                }
+                .pickerStyle(.menu)
             }
 
             Section("Transcription") {
@@ -51,6 +63,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { refreshInputDevices() }
     }
 
     private var languageBinding: Binding<String?> {
@@ -58,5 +71,20 @@ struct SettingsView: View {
             get: { settings.selectedLanguage },
             set: { settings.selectedLanguage = $0 }
         )
+    }
+
+    private var micDeviceBinding: Binding<String?> {
+        Binding(
+            get: { settings.micDeviceUID },
+            set: { settings.micDeviceUID = $0 }
+        )
+    }
+
+    private func refreshInputDevices() {
+        inputDevices = MicrophoneMonitor.allInputDeviceIDs().compactMap { id in
+            guard let name = MicrophoneMonitor.deviceName(id),
+                  let uid = MicCapture.deviceUID(id) else { return nil }
+            return (uid: uid, name: name)
+        }
     }
 }

@@ -46,3 +46,4 @@ targets:
     settings:
       base:
         SWIFT_VERSION: "5"
+        GENERATE_INFOPLIST_FILE: "YES"

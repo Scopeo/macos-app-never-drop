@@ -12,9 +12,6 @@ final class MockMicMonitor: MicrophoneMonitoring, @unchecked Sendable {
     func emit(_ active: Bool) {
         continuation?.yield(active)
     }
-
-    func excludeDevice(_ deviceID: AudioDeviceID) {}
-    func clearExclusions() {}
 }
 
 @MainActor
@@ -25,10 +22,10 @@ final class CallDetectorTests: XCTestCase {
         XCTAssertEqual(detector.state, .idle)
     }
 
-    func testUserAcceptRequiresCallDetected() {
+    func testUserAcceptFromIdleTransitionsToRecording() {
         let detector = CallDetector(micMonitor: MockMicMonitor())
         detector.userAcceptedTranscription()
-        XCTAssertEqual(detector.state, .idle)
+        XCTAssertEqual(detector.state, .recording)
     }
 
     func testUserDeclineRequiresCallDetected() {
@@ -179,8 +176,10 @@ final class CallDetectorTests: XCTestCase {
         let detector = CallDetector(
             micMonitor: mock,
             activationDelay: .milliseconds(50),
-            deactivationDelay: .milliseconds(100)
+            confirmDelay: .milliseconds(100)
         )
+
+        detector.probeExternalMicActivity = { false }
 
         let detected = XCTestExpectation(description: "Call detected")
         detector.onCallDetected = { detected.fulfill() }
@@ -197,7 +196,7 @@ final class CallDetectorTests: XCTestCase {
         detector.onCallEnded = { ended.fulfill() }
 
         mock.emit(false)
-        await fulfillment(of: [ended], timeout: 1.0)
+        await fulfillment(of: [ended], timeout: 2.0)
         XCTAssertEqual(detector.state, .idle)
         detector.stopMonitoring()
     }

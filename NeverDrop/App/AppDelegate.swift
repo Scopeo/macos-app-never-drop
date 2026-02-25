@@ -112,6 +112,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         callDetector.onCallEnded = { [weak self] in
             self?.stopRecordingSession()
         }
+        callDetector.probeExternalMicActivity = { [weak self] in
+            guard let capture = self?.audioCapture else { return true }
+            capture.micCapture.pauseIOProc()
+            try? await Task.sleep(for: .milliseconds(100))
+            let active = MicrophoneMonitor.allInputDeviceIDs().contains {
+                MicrophoneMonitor.isDeviceRunning($0) && !MicrophoneMonitor.isDeviceRunningLocally($0)
+            }
+            capture.micCapture.resumeIOProc()
+            return active
+        }
     }
 
     private func setupPermissionPanel() {
@@ -287,6 +297,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar.updateState(.recording)
 
         let capture = AudioCaptureManager()
+        capture.micCapture.selectedDeviceUID = settings.micDeviceUID
         audioCapture = capture
 
         do {
@@ -296,34 +307,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stopRecordingSession()
             statusBar.updateState(.error("Audio capture failed to start"))
             return
-        }
-
-        let aggregateID = capture.aggregateDeviceID
-        if aggregateID != kAudioObjectUnknown {
-            callDetector.excludeDevice(aggregateID)
-        }
-        let micDeviceID = capture.inputDeviceID
-        if micDeviceID != kAudioObjectUnknown {
-            callDetector.excludeDevice(micDeviceID)
-        }
-
-        capture.onInputDeviceChanged = { [weak self] newDeviceID in
-            guard let self else { return }
-            Task { @MainActor in
-                self.callDetector.clearExclusions()
-                let aggID = capture.aggregateDeviceID
-                if aggID != kAudioObjectUnknown { self.callDetector.excludeDevice(aggID) }
-                if newDeviceID != kAudioObjectUnknown { self.callDetector.excludeDevice(newDeviceID) }
-            }
-        }
-        capture.onAggregateDeviceChanged = { [weak self] newAggregateID in
-            guard let self else { return }
-            Task { @MainActor in
-                self.callDetector.clearExclusions()
-                if newAggregateID != kAudioObjectUnknown { self.callDetector.excludeDevice(newAggregateID) }
-                let micID = capture.inputDeviceID
-                if micID != kAudioObjectUnknown { self.callDetector.excludeDevice(micID) }
-            }
         }
 
         transcriptWriter.userName = settings.userName
@@ -370,7 +353,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcriptStore.activeTranscriptURL = nil
         transcriptWriter.close()
         permissionPanel.dismiss()
-        callDetector.clearExclusions()
         callDetector.resetToIdle()
         statusBar.updateState(.idle)
     }
