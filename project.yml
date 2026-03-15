@@ -10,6 +10,9 @@ packages:
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit.git
     from: "0.12.0"
+  Sentry:
+    url: https://github.com/getsentry/sentry-cocoa.git
+    from: "9.7.0"
 
 targets:
   NeverDrop:
@@ -33,6 +36,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - package: WhisperKit
+      - package: Sentry
     entitlements:
       path: NeverDrop/Resources/NeverDrop.entitlements
 

@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import Sentry
 
 private let logger = Logger.app(category: "Soniox")
 
@@ -77,6 +78,7 @@ final class SonioxTranscriptionService: TranscriptionService {
                 try await micTask.send(.string(micConfig))
             } catch {
                 logger.error("Failed to send Soniox mic config: \(error)")
+                SentrySDK.capture(error: error)
                 return
             }
             await self.audioStreamLoop(task: micTask, audioSource: audioSource, channel: .mic)
@@ -88,6 +90,7 @@ final class SonioxTranscriptionService: TranscriptionService {
                 try await systemTask.send(.string(systemConfig))
             } catch {
                 logger.error("Failed to send Soniox system config: \(error)")
+                SentrySDK.capture(error: error)
                 return
             }
             await self.audioStreamLoop(task: systemTask, audioSource: audioSource, channel: .system)
@@ -153,6 +156,7 @@ final class SonioxTranscriptionService: TranscriptionService {
                 try await task.send(.data(pcmData))
             } catch {
                 logger.error("Failed to send \(String(describing: channel)) audio data: \(error)")
+                SentrySDK.capture(error: error)
                 break
             }
         }
@@ -168,6 +172,7 @@ final class SonioxTranscriptionService: TranscriptionService {
             } catch {
                 if isTranscribing {
                     logger.error("Soniox \(String(describing: channel)) WebSocket receive error: \(error)")
+                    SentrySDK.capture(error: error)
                 }
                 break
             }
@@ -179,6 +184,7 @@ final class SonioxTranscriptionService: TranscriptionService {
 
             if let code = response.errorCode {
                 logger.error("Soniox \(String(describing: channel)) error \(code): \(response.errorMessage ?? "unknown")")
+                SentrySDK.capture(message: "Soniox \(channel) error \(code): \(response.errorMessage ?? "unknown")")
                 break
             }
 
@@ -277,6 +283,7 @@ final class SonioxTranscriptionService: TranscriptionService {
             return json
         } catch {
             logger.error("Failed to serialize Soniox config: \(error)")
+            SentrySDK.capture(error: error)
             return "{}"
         }
     }

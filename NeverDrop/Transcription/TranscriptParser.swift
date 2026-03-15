@@ -1,5 +1,6 @@
 import Foundation
 import os
+import Sentry
 
 private let logger = Logger.app(category: "TranscriptParser")
 

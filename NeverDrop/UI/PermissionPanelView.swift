@@ -5,6 +5,7 @@ struct PermissionPanelView: View {
     var onAccept: () -> Void
     var onDecline: () -> Void
     var onContinue: (() -> Void)? = nil
+    var onReportFalsePositive: (() -> Void)? = nil
     var previousSessionLabel: String? = nil
 
     @State private var secondsRemaining = 15
@@ -44,9 +45,21 @@ struct PermissionPanelView: View {
                 .font(.subheadline)
             }
 
-            Text("Auto-dismiss in \(secondsRemaining)s")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            HStack(spacing: 16) {
+                Text("Auto-dismiss in \(secondsRemaining)s")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
+                if let onReportFalsePositive {
+                    Button("Not a call? Report") {
+                        onReportFalsePositive()
+                        onDecline()
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .buttonStyle(.plain)
+                }
+            }
         }
         .padding(24)
         .frame(width: 320)

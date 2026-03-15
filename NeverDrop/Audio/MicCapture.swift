@@ -2,6 +2,7 @@
 import CoreAudio
 import Foundation
 import os
+import Sentry
 
 private let logger = Logger.app(category: "MicCapture")
 
@@ -186,6 +187,7 @@ final class MicCapture: @unchecked Sendable {
             }
         } catch {
             logger.error("Failed to restart mic capture: \(error)")
+            SentrySDK.capture(error: error)
             if retryCount < 3 {
                 let nextRetry = retryCount + 1
                 restartQueue.asyncAfter(deadline: .now() + .milliseconds(500 * nextRetry)) { [weak self] in

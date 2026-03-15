@@ -9,6 +9,7 @@ final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
     private var continuation: AsyncStream<Bool>.Continuation?
     private var lastStatus: Bool?
     private let queue = DispatchQueue(label: "com.draftnrun.NeverDrop.MicMonitor")
+    var eventLog: DetectionEventLog?
 
     deinit {
         queue.sync { stopMonitoring() }
@@ -67,7 +68,9 @@ final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
     }
 
     private func handleDeviceListChange() {
-        let (_, removed) = refreshDevices()
+        let (added, removed) = refreshDevices()
+        let names = trackedDevices.compactMap { Self.deviceName($0) }.joined(separator: ", ")
+        eventLog?.log(.deviceListChange, "added=\(added) removed=\(removed) devices=[\(names)]")
         if removed {
             checkAndEmit()
         } else {
@@ -112,6 +115,7 @@ final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
         let current = evaluateStatus()
         if lastStatus != current {
             lastStatus = current
+            logMicStatus(current)
             continuation?.yield(current)
         }
     }
@@ -120,6 +124,7 @@ final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
         let current = evaluateStatus()
         guard current, lastStatus != current else { return }
         lastStatus = current
+        logMicStatus(current)
         continuation?.yield(current)
     }
 
@@ -127,6 +132,16 @@ final class MicrophoneMonitor: MicrophoneMonitoring, @unchecked Sendable {
         trackedDevices.contains {
             Self.isDeviceRunning($0) && !Self.isDeviceRunningLocally($0)
         }
+    }
+
+    private func logMicStatus(_ active: Bool) {
+        let details = trackedDevices.map { id -> String in
+            let name = Self.deviceName(id) ?? "\(id)"
+            let running = Self.isDeviceRunning(id)
+            let local = Self.isDeviceRunningLocally(id)
+            return "\(name)(running=\(running),local=\(local))"
+        }.joined(separator: ", ")
+        eventLog?.log(.micStatusChange, "active=\(active) devices=[\(details)]")
     }
 
     // MARK: - CoreAudio helpers

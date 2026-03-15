@@ -1,5 +1,6 @@
 import Foundation
 import os
+import Sentry
 
 private let logger = Logger.app(category: "TranscriptWriter")
 
@@ -65,6 +66,7 @@ final class TranscriptWriter: TranscriptionWriting {
             try fileHandle?.close()
         } catch {
             logger.error("Failed to close transcript file: \(error)")
+            SentrySDK.capture(error: error)
         }
         fileHandle = nil
         currentFileURL = nil

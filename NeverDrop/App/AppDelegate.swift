@@ -4,6 +4,7 @@ import CoreAudio
 import Foundation
 import Observation
 import os
+import Sentry
 import SwiftUI
 
 private let logger = Logger.app(category: "App")
@@ -21,11 +22,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     let settings = AppSettings()
 
+    private let detectionEventLog = DetectionEventLog()
+    private let micMonitor = MicrophoneMonitor()
+    private lazy var callDetector = CallDetector(micMonitor: micMonitor)
     private let statusBar = StatusBarController()
-    private let callDetector = CallDetector()
     private let permissionPanel = PermissionPanel()
     private let transcriptWriter = TranscriptWriter()
     private var audioCapture: AudioCaptureManager?
+    private lazy var detectionReporter = DetectionReporter(
+        eventLog: detectionEventLog,
+        settings: settings,
+        callDetectorState: { [weak self] in self?.callDetector.state ?? .idle }
+    )
 
     private let transcriptStore = TranscriptStore()
     private let mainWindowState = MainWindowState()
@@ -55,11 +63,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
 
+        SentryManager.startIfConsented(settings: settings)
+        SentrySDK.addBreadcrumb(Breadcrumb(level: .info, category: "app.launched"))
+
+        micMonitor.eventLog = detectionEventLog
+        callDetector.eventLog = detectionEventLog
+
         setupMainMenu()
         setupStatusBar()
         setupCallDetector()
         setupPermissionPanel()
+        setupOpenSettingsObserver()
         observeProviderChanges()
+        showConsentPromptIfNeeded()
 
         Task {
             let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
@@ -75,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        SentrySDK.addBreadcrumb(Breadcrumb(level: .info, category: "app.terminated"))
         stopRecordingSession()
         callDetector.stopMonitoring()
     }
@@ -102,6 +119,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusBar.onOpenSettings = { [weak self] in
             self?.showMainWindow(tab: .settings)
+        }
+        statusBar.onReportFalsePositive = { [weak self] in
+            self?.detectionReporter.report(.falsePositive)
+        }
+        statusBar.onReportMissedCall = { [weak self] in
+            self?.detectionReporter.report(.missedCall)
         }
     }
 
@@ -137,6 +160,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let timeOffset = Date().timeIntervalSince(session.startDate)
             startRecordingSession(mode: .continuing(url: session.transcriptURL, timeOffset: timeOffset))
         }
+        permissionPanel.onReportFalsePositive = { [weak self] in
+            self?.detectionReporter.report(.falsePositive)
+        }
+    }
+
+    private func setupOpenSettingsObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleOpenSettingsRequest),
+            name: .openSettingsRequested,
+            object: nil
+        )
+    }
+
+    @objc private func handleOpenSettingsRequest() {
+        showMainWindow(tab: .settings)
+    }
+
+    private func showConsentPromptIfNeeded() {
+        guard !settings.hasBeenAskedForConsent else { return }
+        settings.hasBeenAskedForConsent = true
+
+        let alert = NSAlert()
+        alert.messageText = "Help improve NeverDrop"
+        alert.informativeText = """
+            Send anonymous crash reports and detection diagnostics to help us \
+            improve call detection accuracy.\n\n\
+            We never collect audio, transcript content, or API keys. \
+            You can change this anytime in Settings.
+            """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Enable")
+        alert.addButton(withTitle: "No Thanks")
+
+        let response = alert.runModal()
+        settings.analyticsConsent = (response == .alertFirstButtonReturn)
     }
 
     // MARK: - Main menu
@@ -241,10 +300,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let service = makeTranscriptionService()
         transcriptionService = service
 
+        let transaction = SentrySDK.startTransaction(
+            name: "transcription.prepare",
+            operation: "transcription.prepare"
+        )
         do {
             try await service.prepare()
+            transaction.finish(status: .ok)
         } catch {
             logger.error("Transcription service failed to prepare: \(error)")
+            SentrySDK.capture(error: error)
+            transaction.finish(status: .internalError)
             statusBar.updateState(.error("Transcription service failed to initialize"))
         }
     }
@@ -261,6 +327,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleProviderChange() {
+        let crumb = Breadcrumb(level: .info, category: "transcription.provider_changed")
+        crumb.message = settings.transcriptionProvider.rawValue
+        SentrySDK.addBreadcrumb(crumb)
+        SentryManager.updateBusinessContext(settings: settings)
+
         let wasRecording = audioCapture != nil
         if wasRecording {
             transcriptionService?.stopTranscribing()
@@ -286,6 +357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        SentrySDK.addBreadcrumb(Breadcrumb(level: .info, category: "call.detected"))
         statusBar.updateState(.callDetected)
 
         if let session = lastSession,
@@ -310,6 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try capture.startCapture()
         } catch {
             logger.error("Audio capture failed to start: \(error)")
+            SentrySDK.capture(error: error)
             stopRecordingSession()
             statusBar.updateState(.error("Audio capture failed to start"))
             return
@@ -327,11 +400,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } catch {
             logger.error("Transcript file failed to open: \(error)")
+            SentrySDK.capture(error: error)
             stopRecordingSession()
             statusBar.updateState(.error("Cannot create transcript file"))
             return
         }
 
+        SentrySDK.addBreadcrumb(Breadcrumb(level: .info, category: "recording.started"))
         transcriptStore.activeTranscriptURL = transcriptWriter.currentURL
         callDetector.userAcceptedTranscription()
 
@@ -341,6 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func stopRecordingSession() {
+        SentrySDK.addBreadcrumb(Breadcrumb(level: .info, category: "recording.stopped"))
         transcriptionService?.stopTranscribing()
         audioCapture?.stopCapture()
         audioCapture = nil

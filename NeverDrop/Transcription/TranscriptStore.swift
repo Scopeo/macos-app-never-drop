@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import Sentry
 
 private let logger = Logger.app(category: "TranscriptStore")
 
@@ -145,6 +146,7 @@ final class TranscriptStore {
                 }
             } catch {
                 logger.error("Failed to delete transcript \(url.lastPathComponent): \(error)")
+                SentrySDK.capture(error: error)
             }
         }
         files.removeAll { urls.contains($0.url) }
@@ -162,6 +164,7 @@ final class TranscriptStore {
                 }
             } catch {
                 logger.error("Failed to trash transcript \(url.lastPathComponent): \(error)")
+                SentrySDK.capture(error: error)
             }
         }
     }
@@ -180,6 +183,7 @@ final class TranscriptStore {
             try content.write(to: file.url, atomically: true, encoding: .utf8)
         } catch {
             logger.error("Failed to save transcript file \(file.url.path): \(error)")
+            SentrySDK.capture(error: error)
         }
     }
 

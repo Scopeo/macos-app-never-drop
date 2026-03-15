@@ -20,6 +20,8 @@ final class CallDetector {
     /// external app is still holding a microphone.
     var probeExternalMicActivity: (@MainActor () async -> Bool)?
 
+    var eventLog: DetectionEventLog?
+
     private let micMonitor: any MicrophoneMonitoring
     private var monitorTask: Task<Void, Never>?
     private var debounceTask: Task<Void, Never>?
@@ -68,26 +70,33 @@ final class CallDetector {
         debounceTask?.cancel()
         debounceTask = nil
         cooldownUntil = nil
+        eventLog?.log(.userAction, "user_accepted from=\(state.rawValue)")
         state = .recording
+        eventLog?.log(.stateTransition, "idle→recording trigger=user_accepted")
         startPeriodicProbe()
     }
 
     func userDeclinedTranscription() {
         guard state == .callDetected else { return }
+        eventLog?.log(.userAction, "user_declined from=\(state.rawValue)")
         state = .idle
+        eventLog?.log(.stateTransition, "callDetected→idle trigger=user_declined")
     }
 
     func stopRecording() {
         guard state == .recording else { return }
         state = .stopping
+        eventLog?.log(.stateTransition, "recording→stopping trigger=stopRecording")
         cancelRecordingTasks()
         onCallEnded?()
         state = .idle
+        eventLog?.log(.stateTransition, "stopping→idle trigger=callEnded")
     }
 
     func resetToIdle() {
         cancelAllTasks()
         cooldownUntil = .now + postStopCooldown
+        eventLog?.log(.cooldownEvent, "cooldown_started duration=\(postStopCooldown)")
         state = .idle
     }
 
@@ -107,20 +116,27 @@ final class CallDetector {
         switch state {
         case .idle:
             if let cooldownUntil, ContinuousClock.now < cooldownUntil {
+                eventLog?.log(.cooldownEvent, "mic_activated_blocked_by_cooldown state=idle")
                 return
             }
             cooldownUntil = nil
 
+            eventLog?.log(.debounceEvent, "debounce_started delay=\(activationDelay) state=idle")
             let delay = activationDelay
             debounceTask = Task { [weak self] in
                 do {
                     try await Task.sleep(for: delay)
-                } catch { return }
+                } catch {
+                    self?.eventLog?.log(.debounceEvent, "debounce_cancelled state=\(self?.state.rawValue ?? "?")")
+                    return
+                }
                 guard let self, self.state == .idle else { return }
+                self.eventLog?.log(.stateTransition, "idle→callDetected trigger=debounce_elapsed")
                 self.state = .callDetected
                 self.onCallDetected?()
             }
         case .recording:
+            eventLog?.log(.stateTransition, "mic_reactivated_during_recording confirmStop_cancelled")
             confirmStopTask?.cancel()
             confirmStopTask = nil
         case .callDetected, .stopping:
@@ -131,10 +147,12 @@ final class CallDetector {
     private func handleMicDeactivated() {
         switch state {
         case .idle:
-            break
+            eventLog?.log(.debounceEvent, "debounce_cancelled_by_deactivation state=idle")
         case .callDetected:
+            eventLog?.log(.stateTransition, "callDetected→idle trigger=mic_deactivated")
             state = .idle
         case .recording:
+            eventLog?.log(.probeResult, "mic_deactivated_during_recording triggering_probe")
             triggerProbe()
         case .stopping:
             break
@@ -163,6 +181,7 @@ final class CallDetector {
         guard state == .recording, let probe = probeExternalMicActivity else { return }
 
         let active = await probe()
+        eventLog?.log(.probeResult, "external_mic_active=\(active) state=\(state.rawValue)")
         guard !Task.isCancelled, state == .recording else { return }
 
         if active {
@@ -173,6 +192,7 @@ final class CallDetector {
 
         guard confirmStopTask == nil else { return }
 
+        eventLog?.log(.probeResult, "confirmStop_scheduled delay=\(confirmDelay)")
         let delay = confirmDelay
         confirmStopTask = Task { [weak self] in
             do { try await Task.sleep(for: delay) } catch { return }
@@ -180,10 +200,12 @@ final class CallDetector {
             guard let probe = self.probeExternalMicActivity else { return }
 
             let stillInactive = await probe() == false
+            self.eventLog?.log(.probeResult, "confirmStop_recheck stillInactive=\(stillInactive)")
             guard !Task.isCancelled, self.state == .recording, stillInactive else {
                 self.confirmStopTask = nil
                 return
             }
+            self.eventLog?.log(.stateTransition, "recording→stopping trigger=probe_confirmed_inactive")
             self.stopRecording()
         }
     }

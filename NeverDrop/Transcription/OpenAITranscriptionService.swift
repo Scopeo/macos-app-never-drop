@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import Observation
 import os
+import Sentry
 
 private let logger = Logger.app(category: "OpenAI")
 
@@ -105,6 +106,7 @@ final class OpenAITranscriptionService: TranscriptionService {
                 }
             } catch {
                 logger.error("OpenAI transcription request failed: \(error)")
+                SentrySDK.capture(error: error)
             }
         }
     }

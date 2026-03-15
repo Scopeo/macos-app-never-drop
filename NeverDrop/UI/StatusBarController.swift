@@ -18,6 +18,8 @@ final class StatusBarController: NSObject {
     var onStartRecording: (() -> Void)?
     var onStopRecording: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onReportFalsePositive: (() -> Void)?
+    var onReportMissedCall: (() -> Void)?
 
     private(set) var currentState: StatusBarState = .idle
 
@@ -77,11 +79,21 @@ final class StatusBarController: NSObject {
             let startItem = NSMenuItem(title: "Start Recording", action: #selector(startRecordingAction), keyEquivalent: "s")
             startItem.target = self
             newMenu.addItem(startItem)
+
+            let missedItem = NSMenuItem(title: "Report: missed a call", action: #selector(reportMissedCallAction), keyEquivalent: "")
+            missedItem.target = self
+            newMenu.addItem(missedItem)
+
             newMenu.addItem(NSMenuItem.separator())
         case .recording:
             let stopItem = NSMenuItem(title: "Stop Recording", action: #selector(stopRecordingAction), keyEquivalent: "s")
             stopItem.target = self
             newMenu.addItem(stopItem)
+
+            let falseItem = NSMenuItem(title: "Report: shouldn't be recording", action: #selector(reportFalsePositiveAction), keyEquivalent: "")
+            falseItem.target = self
+            newMenu.addItem(falseItem)
+
             newMenu.addItem(NSMenuItem.separator())
         case .callDetected:
             break
@@ -125,5 +137,13 @@ final class StatusBarController: NSObject {
 
     @objc private func quitAction() {
         onQuit?()
+    }
+
+    @objc private func reportFalsePositiveAction() {
+        onReportFalsePositive?()
+    }
+
+    @objc private func reportMissedCallAction() {
+        onReportMissedCall?()
     }
 }

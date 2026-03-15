@@ -2,6 +2,7 @@
 import CoreAudio
 import Foundation
 import os
+import Sentry
 
 private let logger = Logger.app(category: "SystemAudio")
 
@@ -194,6 +195,7 @@ final class SystemAudioCapture: @unchecked Sendable {
             try buildAggregateAndStart(outputUID: newUID)
         } catch {
             logger.error("Failed to restart system capture: \(error)")
+            SentrySDK.capture(error: error)
         }
     }
 

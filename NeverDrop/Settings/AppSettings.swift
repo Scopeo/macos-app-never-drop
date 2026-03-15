@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import Sentry
 import ServiceManagement
 
 private let logger = Logger.app(category: "Settings")
@@ -63,6 +64,21 @@ final class AppSettings {
         didSet { defaults.set(micDeviceUID, forKey: Keys.micDeviceUID) }
     }
 
+    var analyticsConsent: Bool {
+        didSet {
+            defaults.set(analyticsConsent, forKey: Keys.analyticsConsent)
+            if analyticsConsent {
+                SentryManager.start(settings: self)
+            } else {
+                SentryManager.stop()
+            }
+        }
+    }
+
+    var hasBeenAskedForConsent: Bool {
+        didSet { defaults.set(hasBeenAskedForConsent, forKey: Keys.hasBeenAskedForConsent) }
+    }
+
     var isLaunchAtLoginEnabled: Bool {
         get { SMAppService.mainApp.status == .enabled }
         set {
@@ -72,12 +88,14 @@ final class AppSettings {
                     try service.register()
                 } catch {
                     logger.error("Failed to enable launch at login: \(error)")
+                    SentrySDK.capture(error: error)
                 }
             } else {
                 do {
                     try service.unregister()
                 } catch {
                     logger.error("Failed to disable launch at login: \(error)")
+                    SentrySDK.capture(error: error)
                 }
             }
         }
@@ -92,6 +110,8 @@ final class AppSettings {
         static let language = "selected_language"
         static let userName = "user_name"
         static let micDeviceUID = "mic_device_uid"
+        static let analyticsConsent = "analytics_consent"
+        static let hasBeenAskedForConsent = "has_been_asked_for_consent"
     }
 
     init() {
@@ -104,5 +124,7 @@ final class AppSettings {
         self.selectedLanguage = defaults.string(forKey: Keys.language)
         self.userName = defaults.string(forKey: Keys.userName) ?? ""
         self.micDeviceUID = defaults.string(forKey: Keys.micDeviceUID)
+        self.analyticsConsent = defaults.bool(forKey: Keys.analyticsConsent)
+        self.hasBeenAskedForConsent = defaults.bool(forKey: Keys.hasBeenAskedForConsent)
     }
 }

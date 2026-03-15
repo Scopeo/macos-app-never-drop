@@ -61,6 +61,15 @@ struct SettingsView: View {
             Section("General") {
                 Toggle("Launch at Login", isOn: $settings.isLaunchAtLoginEnabled)
             }
+
+            Section {
+                Toggle("Send anonymous diagnostics & crash reports", isOn: $settings.analyticsConsent)
+                Text("Helps improve call detection accuracy. No audio, transcript content, or API keys are ever collected.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Privacy")
+            }
         }
         .formStyle(.grouped)
         .onAppear { refreshInputDevices() }

@@ -8,15 +8,18 @@ final class PermissionPanel {
     var onAccept: (() -> Void)?
     var onDecline: (() -> Void)?
     var onContinue: (() -> Void)?
+    var onReportFalsePositive: (() -> Void)?
     var previousSessionLabel: String?
 
     func show() {
         guard panel == nil else { return }
 
+        let reportHandler = onReportFalsePositive
         let view = PermissionPanelView(
             onAccept: { [weak self] in self?.accept() },
             onDecline: { [weak self] in self?.decline() },
             onContinue: onContinue.map { handler in { [weak self] in self?.continueSession(handler: handler) } },
+            onReportFalsePositive: reportHandler.map { handler in { handler() } },
             previousSessionLabel: previousSessionLabel
         )
 
