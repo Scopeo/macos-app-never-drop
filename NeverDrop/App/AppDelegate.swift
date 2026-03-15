@@ -218,8 +218,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Transcription service management
 
     private func makeTranscriptionService() -> any TranscriptionService {
+        var provider = settings.transcriptionProvider
+        if !TranscriptionProvider.availableProviders.contains(provider) {
+            provider = TranscriptionProvider.defaultProvider
+            settings.transcriptionProvider = provider
+        }
+
         let service: any TranscriptionService
-        switch settings.transcriptionProvider {
+        switch provider {
         case .whisperLocal:
             service = WhisperTranscriptionService()
         case .sonioxCloud:

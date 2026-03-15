@@ -17,6 +17,22 @@ enum TranscriptionProvider: String, CaseIterable {
         case .openaiCloud: "OpenAI Cloud"
         }
     }
+
+    static let isAppleSilicon: Bool = {
+        #if arch(arm64)
+        return true
+        #else
+        return false
+        #endif
+    }()
+
+    static var availableProviders: [TranscriptionProvider] {
+        isAppleSilicon ? allCases : allCases.filter { $0 != .whisperLocal }
+    }
+
+    static var defaultProvider: TranscriptionProvider {
+        isAppleSilicon ? .whisperLocal : .sonioxCloud
+    }
 }
 
 @Observable
@@ -80,7 +96,9 @@ final class AppSettings {
 
     init() {
         let defaults = UserDefaults.standard
-        self.transcriptionProvider = TranscriptionProvider(rawValue: defaults.string(forKey: Keys.provider) ?? "") ?? .whisperLocal
+        let persisted = TranscriptionProvider(rawValue: defaults.string(forKey: Keys.provider) ?? "")
+        self.transcriptionProvider = persisted.flatMap { TranscriptionProvider.availableProviders.contains($0) ? $0 : nil }
+            ?? TranscriptionProvider.defaultProvider
         self.sonioxAPIKey = defaults.string(forKey: Keys.sonioxAPIKey) ?? ""
         self.openaiAPIKey = defaults.string(forKey: Keys.openaiAPIKey) ?? ""
         self.selectedLanguage = defaults.string(forKey: Keys.language)

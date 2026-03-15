@@ -36,7 +36,7 @@ struct SettingsView: View {
 
             Section("Transcription") {
                 Picker("Provider", selection: $settings.transcriptionProvider) {
-                    ForEach(TranscriptionProvider.allCases, id: \.self) { provider in
+                    ForEach(TranscriptionProvider.availableProviders, id: \.self) { provider in
                         Text(provider.displayName).tag(provider)
                     }
                 }

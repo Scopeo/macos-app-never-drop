@@ -13,6 +13,11 @@ alwaysApply: false
 - Polling loop: every 2 seconds, drain samples from `AudioSource`
 - Rolling buffer: capped at 30 seconds (`maxBufferSeconds`)
 - Word timestamps enabled, clip timestamps used to avoid re-processing confirmed segments
+- **Apple Silicon only** — WhisperKit requires the Neural Engine; on Intel (x86_64) it is hidden from the UI and cannot be selected
+- `TranscriptionProvider.isAppleSilicon` (compile-time `#if arch(arm64)`) gates availability
+- `TranscriptionProvider.availableProviders` filters `.whisperLocal` out on Intel
+- `TranscriptionProvider.defaultProvider` returns `.whisperLocal` on ARM, `.sonioxCloud` on Intel
+- `AppDelegate.makeTranscriptionService()` also guards against a stale persisted value
 
 ## Confirmation Lag
 
